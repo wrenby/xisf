@@ -1,0 +1,30 @@
+[package]
+name = "xisf"
+description = "A standalone encoder/decoder for Pleiades Astrophoto's XISF image format"
+readme = "README.md"
+license = "LICENSE.md"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+error-stack = "0.3.1"
+tracing = { version = "0.1.37", default-features = false, features = ["std"] }
+# tap = "1.0.1"
+# criterion = "0.5.1"
+
+byteorder = "1.4.3"
+hex-simd = "0.8.0"
+libxml = "0.3.3"
+url = "2.4.0"
+ndarray = "0.15.6"
+num-complex = "0.4.3"
+strum = { version = "0.25.0", features = ["derive"] }
+
+
+[dev-dependencies]
+tracing-subscriber = "0.3.17"
+tracing-error = "0.2.0"
+supports-color = "2.0.0"
+supports-unicode = "2.0.0"
