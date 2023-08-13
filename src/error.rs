@@ -4,13 +4,13 @@ use std::{
 };
 
 #[derive(Clone, Debug)]
-pub struct ParseStringError(pub String, pub &'static str);
-impl Display for ParseStringError {
+pub struct ParseValueError(pub String, pub &'static str);
+impl Display for ParseValueError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("Failed to parse string \"{}\" as {}", self.0, self.1))
+        f.write_fmt(format_args!("Failed to parse value \"{}\" as {}", self.0, self.1))
     }
 }
-impl Error for ParseStringError {}
+impl Error for ParseValueError {}
 
 #[derive(Clone, Copy, Debug)]
 pub struct ParseNodeError(pub &'static str);

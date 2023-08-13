@@ -44,6 +44,7 @@ fn main() {
         }
     }
 
-    let _file = xisf::XISF::read_file("test-files/BiasStacked/BiasStacked.xisf", &Default::default())
+    let file = xisf::XISF::read_file("test-files/BiasStacked/BiasStacked.xisf", &Default::default())
         .expect("Fatal error");
+    println!("{file:#?}");
 }

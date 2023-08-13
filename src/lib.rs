@@ -63,16 +63,17 @@ impl WriteOptions {
         Self {
             creator_application: app_name.into(),
             export_fits_keywords: true,
-            checksum_alg: None,
+            checksum_alg: Some(ChecksumAlgorithm::Sha1), // * differs from reference implementation, where default is no checksum
             compression_alg: None,
             fp_lower_bound: 0.0,
             fp_upper_bound: 1.0,
             block_alignment_size: 4096,
-            max_inline_block_size: 3072, // a block of 4096 bytes takes 3072 in base64 encoding
+            max_inline_block_size: 3072, // a block of 3072 bytes takes 4096 bytes in base64 encoding
         }
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct XISF {
     pub initial_comment: Option<String>,
     pub images: Vec<Image>,

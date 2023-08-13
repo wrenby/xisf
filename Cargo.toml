@@ -15,12 +15,12 @@ tracing = { version = "0.1.37", default-features = false, features = ["std"] }
 # criterion = "0.5.1"
 
 byteorder = "1.4.3"
-hex-simd = "0.8.0"
 libxml = "0.3.3"
 url = "2.4.0"
 ndarray = "0.15.6"
 num-complex = "0.4.3"
 strum = { version = "0.25.0", features = ["derive"] }
+parse_int = "0.6.0"
 
 
 [dev-dependencies]
