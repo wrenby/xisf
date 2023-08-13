@@ -23,13 +23,13 @@ impl Error for ParseNodeError {}
 
 
 #[derive(Clone, Copy, Debug)]
-pub struct ReadImageError;
-impl Display for ReadImageError {
+pub struct ReadDataBlockError;
+impl Display for ReadDataBlockError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("Failed to read XISF image data")
     }
 }
-impl Error for ReadImageError {}
+impl Error for ReadDataBlockError {}
 
 #[derive(Clone, Copy, Debug)]
 pub struct ReadFileError;

@@ -1,12 +1,13 @@
 use error_stack::{IntoReport, Report, report, ResultExt};
-use libxml::readonly::RoNode;
+use libxml::{readonly::RoNode, xpath::Context as XpathContext};
 use ndarray::ArrayD;
 use num_complex::Complex;
 use parse_int::parse as parse_auto_radix;
 use strum::{Display, EnumString, EnumVariantNames, VariantNames};
+use uuid::Uuid;
 use crate::{
     data_block::DataBlockLocation,
-    error::ReadImageError,
+    error::ReadDataBlockError,
     ReadOptions,
     ParseNodeError,
 };
@@ -62,10 +63,27 @@ pub enum ImageType {
     WeightMap,
 }
 
+#[derive(Clone, Copy, Debug, Display, Default, EnumString)]
+pub enum PixelStorage {
+    #[default]
+    Planar,
+    Normal
+}
+
+#[derive(Clone, Copy, Debug, Display, Default, EnumString)]
+pub enum ColorSpace {
+    #[default]
+    Grayscale,
+    RGB,
+    CIELab,
+}
+
 // TODO: should image actually be an enum, just pushing all the SampleValue stuff to the top?
 // Bit too big of a refactor before a commit, but something promising to play around with
 #[derive(Clone, Debug)]
 pub struct Image {
+    pub uid: Option<String>,
+
     pub data_block: DataBlockLocation,
     pub geometry: Vec<u64>,
     pub sample_format: SampleFormat,
@@ -73,10 +91,15 @@ pub struct Image {
     // for images in a non-RGB color space, these bounds apply to pixel sample values once converted to RGB, not in its native color space
     pub bounds: Option<(f64, f64)>,
     pub image_type: Option<ImageType>,
+    pub pixel_storage: PixelStorage,
+    pub color_space: ColorSpace,
+    pub offset: f64,
+    pub id: Option<String>,
+    pub uuid: Option<Uuid>,
 }
 
 impl Image {
-    pub fn new(node: &RoNode, _opts: &ReadOptions) -> Result<Self, Report<ParseNodeError>> {
+    pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext, _opts: &ReadOptions) -> Result<Self, Report<ParseNodeError>> {
         const CONTEXT: ParseNodeError = ParseNodeError("Image");
         let _span_guard = tracing::debug_span!("<Image>").entered();
 
@@ -167,19 +190,37 @@ impl Image {
         }
 
         Ok(Image {
+            uid: None,
+
             data_block,
             geometry,
             sample_format,
 
             bounds,
             image_type,
+            // TODO: parse these attributes
+            pixel_storage: Default::default(),
+            color_space: Default::default(),
+            offset: 0.0,
+            id: None,
+            uuid: None,
         })
     }
 
-    pub fn read_data(&mut self) -> Result<ImageData, Report<ReadImageError>> {
+    pub fn num_dimensions(&self) -> usize {
+        self.geometry.len() - 1
+    }
+    pub fn num_channels(&self) -> u64 {
+        self.geometry[self.geometry.len() - 1]
+    }
+
+    pub fn read_data(&self) -> Result<ImageData, Report<ReadDataBlockError>> {
         todo!()
     }
-    pub async fn read_data_async(&mut self) -> Result<ImageData, Report<ReadImageError>> {
+    // fn read_data_impl<T>(&self) -> Result<ImageData, Report<ReadDataBlockError>> {
+
+    // }
+    pub async fn read_data_async(&self) -> Result<ImageData, Report<ReadDataBlockError>> {
         todo!()
     }
 }

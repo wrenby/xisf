@@ -11,8 +11,13 @@ An unaffiliated implementation of Pleiades Astrophoto's open-source XISF file fo
 
 - [ ] MVP loading of images: N-dimensional images for N &ge; 1, not just 2D with M channels
 - [ ] Optional image attributes
+- [ ] <FITSKeyword>
+- [ ] Scalar, Complex, String, TimePoint <Property>
 - [ ] Load image thumbnails
-- [ ] Image properties
+- [ ] <Reference>
+- [ ] C/C++11 support with cbindgen
+- [ ] Vector and Matrix Properties
 - [ ] Remote resources via GIO
+- [ ] Table Properties
 - [ ] zstd support
 - [ ] XML Digital Signature verification

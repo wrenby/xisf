@@ -1,6 +1,11 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use error_stack::{IntoReport, Report, ResultExt, report};
-use libxml::{parser::Parser as XmlParser, tree::NodeType, readonly::RoNode};
+use libxml::{
+    parser::Parser as XmlParser,
+    tree::NodeType,
+    readonly::RoNode,
+    xpath::Context as XpathContext,
+};
 use std::{
     ffi::CStr,
     fs::File,
@@ -170,7 +175,18 @@ impl XISF {
             .ok_or(report!(ReadFileError))
             .attach_printable("No root element found in XML header")?;
 
-        Self::parse_root_node(&root, opts)
+        // we need to pass down a global xpath context in order to resolve <Reference> elements
+        let xpath = XpathContext::from_node(&xml.get_root_element().unwrap())
+            .map_err(|_| report!(ReadFileError))
+            .attach_printable("Failed to create XPATH context for XML header")?;
+
+        // xisf root element assigns a default namespace, but does not associate a prefix with it
+        // in order to select these nodes by name with xpath, we have to assign them a prefix ourselves
+        xpath.register_namespace("xisf", "http://www.pixinsight.com/xisf")
+            .map_err(|_| report!(ReadFileError))
+            .attach_printable("Failed to associate prefix to xisf namespace in XML header")?;
+
+        Self::parse_root_node(root, &xpath, opts)
             .change_context(ReadFileError)
             .map(|xisf| {
                 Self { // surgically reinsert the comment for safekeeping
@@ -180,7 +196,7 @@ impl XISF {
             })
     }
 
-    fn parse_root_node(node: &RoNode, opts: &ReadOptions) -> Result<XISF, Report<ParseNodeError>> {
+    fn parse_root_node(node: RoNode, xpath: &XpathContext, opts: &ReadOptions) -> Result<XISF, Report<ParseNodeError>> {
         const CONTEXT: ParseNodeError = ParseNodeError("xisf");
         if node.get_name() != "xisf" {
             return Err(report!(CONTEXT))
@@ -203,7 +219,7 @@ impl XISF {
                 .attach_printable(format!("Invalid version attribute for <xisf> element in XML header: expected \"1.0\", found \"{bad}\"")),
         }
 
-        // we don't actually care if schemaLocation exists, or what its value is
+        // we don't actually care if xsi:schemaLocation exists, or what its value is
         // just calling remove here so it doesn't create a warning below if it exists
         attrs.remove("schemaLocation");
 
@@ -214,7 +230,7 @@ impl XISF {
         let mut images = vec![];
         for child in node.get_child_nodes() {
             match child.get_name().as_str() {
-                "Image" => images.push(Image::new(&child, opts).change_context(CONTEXT)?),
+                "Image" => images.push(Image::parse_node(child, xpath, opts).change_context(CONTEXT)?),
                 _ => tracing::warn!("Ignoring unrecognized child node <{}>", child.get_name()),
             }
         }

@@ -23,12 +23,12 @@ pub enum DataBlockLocation {
     Inline {
         // data is encoded in a child text node
         encoding: Encoding,
-        text: String, // ! may still include whitespace, which must be ignored when decoding
+        text: String, // stripped of all whitespace
     },
     Embedded {
         // data is encoded in a child <Data> node
         encoding: Encoding,
-        text: String, // ! may still include whitespace, which must be ignored when decoding
+        text: String, // stripped of all whitespace
     },
     Attachment {
         // data is elsewhere in the file
@@ -53,7 +53,7 @@ impl DataBlockLocation {
     // returns Ok(Some(_)) if a data block location was successfully parsed
     // returns Ok(None) if there is no location attribute
     // returns Err(_) if there was an error parsing the data block location
-    pub(crate) fn from_node(node: &RoNode, context: ParseNodeError) -> Result<Option<Self>, Report<ParseNodeError>> {
+    pub(crate) fn from_node(node: RoNode, context: ParseNodeError) -> Result<Option<Self>, Report<ParseNodeError>> {
         if let Some(attr) = node.get_attribute("location") {
             match attr.split(":").collect::<Vec<_>>().as_slice() {
                 &["inline", encoding] => {
@@ -64,9 +64,16 @@ impl DataBlockLocation {
 
                     match node.get_child_nodes().as_slice() {
                         [] => Err(report!(context)).attach_printable("Missing child text node: required for inline data blocks"),
-                        [text] if text.get_type() == Some(NodeType::TextNode) => Ok(Some(
-                            Self::Inline { encoding, text: text.get_content() }
-                        )),
+                        [text] if text.get_type() == Some(NodeType::TextNode) => {
+                            let mut text = text.get_content();
+                            text.retain(|c| !c.is_whitespace());
+                            Ok(Some(
+                                Self::Inline {
+                                    encoding,
+                                    text,
+                                }
+                            ))
+                        },
                         _other => Err(report!(context)).attach_printable("XISF Elements with inline data blocks are not permitted to have non-text child nodes"),
                     }
                 },
@@ -87,9 +94,16 @@ impl DataBlockLocation {
 
                                 match node.get_child_nodes().as_slice() {
                                     [] => Err(report!(context)).attach_printable("Embedded <Data> node missing child text node"),
-                                    [text] if text.get_type() == Some(NodeType::TextNode) => Ok(Some(
-                                        Self::Embedded { encoding, text: text.get_content() }
-                                    )),
+                                    [text] if text.get_type() == Some(NodeType::TextNode) => {
+                                        let mut text = text.get_content();
+                                        text.retain(|c| !c.is_whitespace());
+                                        Ok(Some(
+                                            Self::Embedded {
+                                                encoding,
+                                                text,
+                                            }
+                                        ))
+                                    },
                                     _other => Err(report!(context)).attach_printable("Embedded <Data> nodes are not permitted to have non-text child nodes"),
                                 }
                             } else {

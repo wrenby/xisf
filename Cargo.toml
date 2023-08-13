@@ -21,6 +21,7 @@ ndarray = "0.15.6"
 num-complex = "0.4.3"
 strum = { version = "0.25.0", features = ["derive"] }
 parse_int = "0.6.0"
+uuid = { version = "1.4.1", features = ["v4"] }
 
 
 [dev-dependencies]
