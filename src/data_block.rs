@@ -14,7 +14,7 @@ use url::Url;
 use crate::error::{ParseValueError, ParseNodeError};
 
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct DataBlock {
     pub location: DataBlockLocation,
     pub byte_order: ByteOrder,

@@ -12,74 +12,6 @@ use crate::{
     ParseNodeError,
 };
 
-#[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames)]
-pub enum SampleFormat {
-    UInt8,
-    UInt16,
-    UInt32,
-    UInt64,
-    Float32,
-    Float64,
-    Complex32,
-    Complex64,
-}
-impl SampleFormat {
-    pub(crate) fn requires_bounds(&self) -> bool {
-        match self {
-            Self::Float32 | Self::Float64 => true,
-            _ => false,
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub enum ImageData {
-    UInt8(ArrayD<u8>),
-    UInt16(ArrayD<u16>),
-    UInt32(ArrayD<u32>),
-    UInt64(ArrayD<u64>),
-    Float32(ArrayD<f32>),
-    Float64(ArrayD<f64>),
-    Complex32(ArrayD<Complex<f32>>),
-    Complex64(ArrayD<Complex<f64>>),
-}
-
-#[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames)]
-pub enum ImageType {
-    Bias,
-    Dark,
-    Flat,
-    Light,
-    MasterBias,
-    MasterDark,
-    MasterFlat,
-    MasterLight,
-    DefectMap,
-    RejectionMapHigh,
-    RejectionMapLow,
-    BinaryRejectionMapHigh,
-    BinaryRejectionMapLow,
-    SlopeMap,
-    WeightMap,
-}
-
-#[derive(Clone, Copy, Debug, Display, Default, EnumString)]
-pub enum PixelStorage {
-    #[default]
-    Planar,
-    Normal
-}
-
-#[derive(Clone, Copy, Debug, Display, Default, EnumString)]
-pub enum ColorSpace {
-    #[default]
-    Grayscale,
-    RGB,
-    CIELab,
-}
-
-// TODO: should image actually be an enum, just pushing all the SampleValue stuff to the top?
-// Bit too big of a refactor before a commit, but something promising to play around with
 #[derive(Clone, Debug)]
 pub struct Image {
     pub uid: Option<String>,
@@ -89,7 +21,7 @@ pub struct Image {
     pub sample_format: SampleFormat,
 
     // for images in a non-RGB color space, these bounds apply to pixel sample values once converted to RGB, not in its native color space
-    pub bounds: Option<(f64, f64)>,
+    pub bounds: Option<SampleBounds>,
     pub image_type: Option<ImageType>,
     pub pixel_storage: PixelStorage,
     pub color_space: ColorSpace,
@@ -152,16 +84,16 @@ impl Image {
                 .ok_or(report!(CONTEXT))
                 .attach_printable_lazy(|| "Invalid bounds attribute: expected pattern \"low:high\", found \"{val}\"")?;
 
-            Some((
-                low.trim().parse::<f64>()
+            Some(SampleBounds {
+                low: low.trim().parse::<f64>()
                     .into_report()
                     .change_context(CONTEXT)
                     .attach_printable("Invalid bounds attribute: failed to parse lower bound")?,
-                high.trim().parse::<f64>()
+                high: high.trim().parse::<f64>()
                     .into_report()
                     .change_context(CONTEXT)
                     .attach_printable("Invalid bounds attribute: failed to parse upper bound")?
-            ))
+            })
         } else if sample_format.requires_bounds() {
             return Err(report!(CONTEXT))
                 .attach_printable(format!("Missing bounds attribute: required when using using {sample_format} sample format"));
@@ -300,4 +232,76 @@ impl Image {
             }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames)]
+pub enum SampleFormat {
+    UInt8,
+    UInt16,
+    UInt32,
+    UInt64,
+    Float32,
+    Float64,
+    Complex32,
+    Complex64,
+}
+impl SampleFormat {
+    pub(crate) fn requires_bounds(&self) -> bool {
+        match self {
+            Self::Float32 | Self::Float64 => true,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SampleBounds {
+    pub low: f64,
+    pub high: f64,
+}
+
+#[derive(Clone, Debug)]
+pub enum ImageData {
+    UInt8(ArrayD<u8>),
+    UInt16(ArrayD<u16>),
+    UInt32(ArrayD<u32>),
+    UInt64(ArrayD<u64>),
+    Float32(ArrayD<f32>),
+    Float64(ArrayD<f64>),
+    Complex32(ArrayD<Complex<f32>>),
+    Complex64(ArrayD<Complex<f64>>),
+}
+
+#[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames)]
+pub enum ImageType {
+    Bias,
+    Dark,
+    Flat,
+    Light,
+    MasterBias,
+    MasterDark,
+    MasterFlat,
+    MasterLight,
+    DefectMap,
+    RejectionMapHigh,
+    RejectionMapLow,
+    BinaryRejectionMapHigh,
+    BinaryRejectionMapLow,
+    SlopeMap,
+    WeightMap,
+}
+
+#[derive(Clone, Copy, Debug, Display, Default, EnumString)]
+pub enum PixelStorage {
+    #[default]
+    Planar,
+    Normal
+}
+
+#[derive(Clone, Copy, Debug, Display, Default, EnumString)]
+pub enum ColorSpace {
+    #[default]
+    Grayscale,
+    RGB,
+    CIELab,
 }
