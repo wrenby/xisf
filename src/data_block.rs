@@ -1,6 +1,8 @@
 use std::{
     collections::HashMap,
+    io::{Read, BufReader, Seek, Cursor},
     fmt,
+    fs::File,
     num::NonZeroU8,
     path::PathBuf,
     str::FromStr,
@@ -11,7 +13,7 @@ use libxml::{readonly::RoNode, tree::NodeType, xpath::Context as XpathContext};
 use parse_int::parse as parse_auto_radix;
 use strum::{EnumString, Display};
 use url::Url;
-use crate::error::{ParseValueError, ParseNodeError};
+use crate::error::{ParseValueError, ParseNodeError, ReadDataBlockError};
 
 
 #[derive(Debug, Clone, PartialEq)]
@@ -83,13 +85,8 @@ impl DataBlock {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum DataBlockLocation {
-    Inline {
-        // data is encoded in a child text node
-        encoding: Encoding,
-        text: String, // stripped of all whitespace
-    },
-    Embedded {
-        // data is encoded in a child <Data> node
+    Plaintext {
+        // inline or embedded: data is encoded in a child text or <Data> node
         encoding: Encoding,
         text: String, // stripped of all whitespace
     },
@@ -133,7 +130,7 @@ impl DataBlockLocation {
                             let mut text = text.get_content();
                             text.retain(|c| !c.is_whitespace());
                             Ok(Some(
-                                Self::Inline {
+                                Self::Plaintext {
                                     encoding,
                                     text,
                                 }
@@ -157,13 +154,13 @@ impl DataBlockLocation {
                                     .change_context(context)
                                     .attach_printable("Invalid encoding attribute in embedded <Data> node")?;
 
-                                match node.get_child_nodes().as_slice() {
+                                match one.get_child_nodes().as_slice() {
                                     [] => Err(report!(context)).attach_printable("Embedded <Data> node missing child text node"),
                                     [text] if text.get_type() == Some(NodeType::TextNode) => {
                                         let mut text = text.get_content();
                                         text.retain(|c| !c.is_whitespace());
                                         Ok(Some(
-                                            Self::Embedded {
+                                            Self::Plaintext {
                                                 encoding,
                                                 text,
                                             }
@@ -191,6 +188,8 @@ impl DataBlockLocation {
                     }))
                 },
                 &[url] if url.starts_with("url(") && url.ends_with(")") => {
+                    // parentheses in url must be encoded with XML character references #&40; and &#41;,
+                    // but libxml handles that for us transparently
                     Ok(Some(Self::Url {
                         // the slice indexing trims "url(" from the front and ")" from the end
                         url: Url::parse(&url[4..url.len()-1])
@@ -201,6 +200,8 @@ impl DataBlockLocation {
                     }))
                 },
                 &[url, index_id] if url.starts_with("url(") && url.ends_with(")") => {
+                    // parentheses in url must be encoded with XML character references #&40; and &#41;,
+                    // but libxml handles that for us transparently
                     Ok(Some(Self::Url {
                         // the slice indexing trims "url(" from the front and ")" from the end
                         url: Url::parse(&url[4..url.len()-1])
@@ -214,6 +215,8 @@ impl DataBlockLocation {
                     }))
                 },
                 &[path] if path.starts_with("path(") && path.ends_with(")") => {
+                    // parentheses in path must be encoded with XML character references #&40; and &#41;,
+                    // but libxml handles that for us transparently
                     Ok(Some(Self::Path {
                         // the slice indexing trims "path(" from the front and ")" from the end
                         path: PathBuf::from(&path[5..path.len()-1]),
@@ -221,6 +224,8 @@ impl DataBlockLocation {
                     }))
                 },
                 &[path, index_id] if path.starts_with("path(") && path.ends_with(")") => {
+                    // parentheses in path must be encoded with XML character references #&40; and &#41;,
+                    // but libxml handles that for us transparently
                     Ok(Some(Self::Path {
                         // the slice indexing trims "path(" from the front and ")" from the end
                         path: PathBuf::from(&path[5..path.len()-1]),
@@ -237,8 +242,48 @@ impl DataBlockLocation {
             Ok(None)
         }
     }
+
+    // TODO: consider passing &mut crate::XISF and storing + reading from the BufReader used to open the file
+    // seems like the only way to do it if I want to be able to read files from memory or a byte stream down the road
+    // would have to make a custom supertrait for Read + Seek
+    pub fn bytes(&self, xisf: &crate::XISF) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
+        // TODO: is it possible to have some kind of shim to transform the endianness on the fly?
+        // TODO: verify checksum (on compressed data, not uncompressed)
+        // TODO: decompress
+        let base64 = base64_simd::STANDARD;
+        match self {
+            Self::Plaintext { encoding, text } => {
+                let buf = match encoding {
+                    Encoding::Hex => hex_simd::decode_to_vec(text)
+                        .into_report()
+                        .change_context(ReadDataBlockError)?,
+                    Encoding::Base64 => base64.decode_to_vec(text)
+                        .into_report()
+                        .change_context(ReadDataBlockError)?,
+                };
+                Ok(Box::new(Cursor::new(buf)))
+            },
+            Self::Attachment { position, size } => {
+                let mut file = File::open(&xisf.filename)
+                    .into_report()
+                    .change_context(ReadDataBlockError)?;
+                file.seek(std::io::SeekFrom::Start(*position))
+                    .into_report()
+                    .change_context(ReadDataBlockError)?;
+                Ok(Box::new(BufReader::new(file).take(*size)))
+            },
+            #[allow(unused_variables)]
+            Self::Url { url, index_id } => {
+                todo!()
+            },
+            #[allow(unused_variables)]
+            Self::Path { path, index_id } => {
+                todo!()
+            },
+        }
+    }
+
     pub fn is_remote(&self) -> bool {
-        // TODO: should local files count as remote? there's a chance of a local file leaking your IP if it's mounted via fuse or something
         match self {
             Self::Url { url, .. } if url.scheme() != "file" => true,
             _ => false,
@@ -488,7 +533,7 @@ impl CompressionLevel {
     pub fn new(level: u8) -> Result<Self, Report<ParseValueError>> {
         match level {
             0 => Ok(Self::Auto),
-            (1..=100) => Ok(Self::Value(NonZeroU8::new(level).unwrap())),
+            (1..=100) => Ok(Self::Value(NonZeroU8::new(level).unwrap())), // safe because the match arm range does not contain 0
             bad => Err(ParseValueError("CompressionLevel"))
                 .into_report()
                 .attach_printable(format!("Must be between 0 and 100, found {bad}"))

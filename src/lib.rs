@@ -10,17 +10,17 @@ use std::{
     ffi::CStr,
     fs::File,
     io::{BufReader, Read},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
-mod error;
+pub mod error;
 use error::{ParseNodeError, ReadFileError};
 
-mod data_block;
+pub mod data_block;
 use data_block::{ChecksumAlgorithm, CompressionAlgorithm, CompressionLevel};
 
-mod image;
-pub use image::Image;
+pub mod image;
+use image::Image;
 
 #[derive(Clone, Debug)]
 pub struct ReadOptions {
@@ -41,7 +41,6 @@ impl Default for ReadOptions {
     }
 }
 
-// TODO: fp_lower_bound and fp_upper_bound only have 64-bit accuracy, whereas XISF can support 128-bit floats
 #[derive(Clone, Debug)]
 pub struct WriteOptions {
     // name of the application using this library
@@ -80,6 +79,8 @@ impl WriteOptions {
 
 #[derive(Clone, Debug)]
 pub struct XISF {
+    // TODO: this approach isn't future proof for if I ever want to load from a memory block instead of a file
+    pub filename: PathBuf,
     pub initial_comment: Option<String>,
     pub images: Vec<Image>,
 }
@@ -88,7 +89,7 @@ impl XISF {
         let filename_str = filename.as_ref().to_string_lossy().to_string();
         let _span_guard = tracing::debug_span!("read_file", filename = filename_str).entered();
 
-        let f = File::open(filename)
+        let f = File::open(filename.as_ref())
             .into_report()
             .change_context(ReadFileError)
             .attach_printable_lazy(|| format!("Failed to open file {filename_str} for reading"))?;
@@ -136,7 +137,7 @@ impl XISF {
             .change_context(ReadFileError)
             .attach_printable("Failed to parse XML header")?;
 
-        // TODO: make a version of xmlsec that fits my needs
+        // TODO: make an interface for xmlsec that fits my needs
         // - supports embedded keys, propagates errors instead of panicking, cross-platform
         // // verify signature before reading anything at all
         // let ctx = XmlSecSignatureContext::new();
@@ -177,6 +178,8 @@ impl XISF {
 
         // we need to pass down a global xpath context in order to resolve <Reference> elements
         // using the root element instead of the document node because
+        // although I wish there were a way to cast Node as RoNode, this unwrap is safe because we know the element exists
+        // ? at least I'm pretty sure it is...
         let xpath = XpathContext::from_node(&xml.get_root_element().unwrap())
             .map_err(|_| report!(ReadFileError))
             .attach_printable("Failed to create XPATH context for XML header")?;
@@ -184,11 +187,12 @@ impl XISF {
         // xisf root element should have a default namespace, but does not associate a prefix with it
         // in order to select these nodes by name with xpath, we have to assign them a prefix ourselves
         // ! spec doesn't require this namespace to exist -- how to handle?
+        // frankly I don't know see the point of having the namespace is if you don't make it mandatory
         xpath.register_namespace("xisf", "http://www.pixinsight.com/xisf")
             .map_err(|_| report!(ReadFileError))
             .attach_printable("Failed to associate prefix to xisf namespace in XML header")?;
 
-        Self::parse_root_node(root, &xpath, opts)
+        Self::parse_root_node(root, &xpath, filename, opts)
             .change_context(ReadFileError)
             .map(|xisf| {
                 Self { // surgically reinsert the comment for safekeeping
@@ -198,7 +202,7 @@ impl XISF {
             })
     }
 
-    fn parse_root_node(node: RoNode, xpath: &XpathContext, opts: &ReadOptions) -> Result<XISF, Report<ParseNodeError>> {
+    fn parse_root_node(node: RoNode, xpath: &XpathContext, filename: impl AsRef<Path>, opts: &ReadOptions) -> Result<XISF, Report<ParseNodeError>> {
         const CONTEXT: ParseNodeError = ParseNodeError("xisf");
         if node.get_name() != "xisf" {
             return Err(report!(CONTEXT))
@@ -238,6 +242,7 @@ impl XISF {
         }
 
         Ok(XISF {
+            filename: filename.as_ref().to_owned(),
             initial_comment: None,
             images,
         })

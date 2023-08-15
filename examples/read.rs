@@ -2,6 +2,7 @@ use error_stack::{fmt::{Charset, ColorMode}, Report};
 use tracing::Level;
 use tracing_error::ErrorLayer;
 use tracing_subscriber::{prelude::*, FmtSubscriber};
+use xisf::image::ImageData;
 use std::env;
 
 fn main() {
@@ -44,7 +45,26 @@ fn main() {
         }
     }
 
-    let file = xisf::XISF::read_file("test-files/BiasStacked/BiasStacked.xisf", &Default::default())
-        .expect("Fatal error");
-    println!("{file:#?}");
+    let xisf = xisf::XISF::read_file("test-files/BiasStacked/test.xisf", &Default::default()).unwrap();
+    println!("{xisf:#?}");
+
+    let ndarray = xisf.images[0].read_data(&xisf).unwrap();
+    println!("{:?}", ndarray);
+    match ndarray {
+        ImageData::Float32(arr) => {
+            let image_description = fitsio::images::ImageDescription {
+                data_type: fitsio::images::ImageType::Float,
+                dimensions: xisf.images[0].geometry_trimmed(),
+            };
+
+            let mut fits = fitsio::FitsFile::create("test-files/BiasStacked/converted.fits")
+                .overwrite()
+                .with_custom_primary(&image_description)
+                .open()
+                .unwrap();
+            fits.primary_hdu().unwrap().write_image(&mut fits, arr.as_slice().unwrap()).unwrap(); // arr.reversed_axes().as_slice_memory_order().unwrap()).unwrap();
+        }
+        _ => todo!(),
+    }
+
 }

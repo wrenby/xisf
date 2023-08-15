@@ -23,6 +23,8 @@ strum = { version = "0.25.0", features = ["derive"] }
 parse_int = "0.6.0"
 uuid = { version = "1.4.1", features = ["v4"] }
 hex-simd = { version = "0.8.0", features = ["alloc"] }
+base64-simd = "0.8.0"
+num-traits = "0.2.16"
 
 
 [dev-dependencies]
@@ -30,3 +32,4 @@ tracing-subscriber = "0.3.17"
 tracing-error = "0.2.0"
 supports-color = "2.0.0"
 supports-unicode = "2.0.0"
+fitsio = "0.21.2"

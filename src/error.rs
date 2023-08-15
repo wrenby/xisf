@@ -26,7 +26,7 @@ impl Error for ParseNodeError {}
 pub struct ReadDataBlockError;
 impl Display for ReadDataBlockError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Failed to read XISF image data")
+        f.write_str("Failed to read bytes from XISF data block")
     }
 }
 impl Error for ReadDataBlockError {}

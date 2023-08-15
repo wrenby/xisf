@@ -1,3 +1,6 @@
+use std::io::Read;
+
+use byteorder::{ReadBytesExt, LE, BE};
 use error_stack::{IntoReport, Report, report, ResultExt};
 use libxml::{readonly::RoNode, xpath::Context as XpathContext};
 use ndarray::{ArrayD, IxDyn};
@@ -6,7 +9,7 @@ use parse_int::parse as parse_auto_radix;
 use strum::{Display, EnumString, EnumVariantNames, VariantNames};
 use uuid::Uuid;
 use crate::{
-    data_block::DataBlock,
+    data_block::{DataBlock, ByteOrder},
     error::ReadDataBlockError,
     ReadOptions,
     ParseNodeError,
@@ -111,6 +114,17 @@ impl Image {
             None
         };
 
+        let pixel_storage = if let Some(val) = attrs.remove("pixelStorage") {
+            val.parse::<PixelStorage>()
+                .into_report()
+                .change_context(CONTEXT)
+                .attach_printable_lazy(||
+                    format!("Invalid pixelStorage attribute: expected one of {:?}, found {val}", PixelStorage::VARIANTS)
+                )?
+        } else {
+            Default::default()
+        };
+
         for remaining in attrs.into_iter() {
             tracing::warn!("Ignoring unrecognized attribute {}=\"{}\"", remaining.0, remaining.1);
         }
@@ -124,13 +138,13 @@ impl Image {
             uid: None,
 
             data_block,
-            geometry,
+            geometry: geometry.into_iter().rev().collect(), // swap to row-major order
             sample_format,
 
             bounds,
             image_type,
+            pixel_storage,
             // TODO: parse these attributes
-            pixel_storage: Default::default(),
             color_space: Default::default(),
             offset: 0.0,
             id: None,
@@ -138,99 +152,118 @@ impl Image {
         })
     }
 
+    // cull leading 1-size dimensions, useful for compatibility with FITS
+    // some FITS readers incorrectly use NAXIS=2 vs 3 as an indicator of a grayscale vs RGB image
+    pub fn geometry_trimmed(&self) -> &[usize] {
+        let mut trim = 0;
+        for i in &self.geometry {
+            if *i == 1 {
+                trim += 1;
+            }
+        }
+        &self.geometry[trim..]
+    }
     pub fn num_dimensions(&self) -> usize {
         self.geometry.len() - 1
     }
     pub fn num_channels(&self) -> usize {
-        self.geometry[self.geometry.len() - 1]
+        self.geometry[0]
     }
 
-    // get the compiler to pipe down while I'm just trying to hack something together
-    #[allow(unused_mut)]
-    pub fn read_data(&self) -> Result<ImageData, Report<ReadDataBlockError>> {
-        let total_len = self.geometry.iter().fold(1, |acc, n| acc * n);
+    // TODO: convert CIE L*a*b images to RGB
+    pub fn read_data(&self, root: &crate::XISF) -> Result<ImageData, Report<ReadDataBlockError>> {
+        let mut reader = self.data_block.location.bytes(&root)?;
         match self.sample_format {
-            SampleFormat::UInt8 => {
-                let mut buf = ArrayD::<u8>::zeros(IxDyn(&[total_len]));
-                // TODO: fill buffer
-                Ok(ImageData::UInt8(
-                    buf.into_shape(self.geometry.as_slice())
-                        .into_report()
-                        .change_context(ReadDataBlockError)
-                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
-                ))
-            }
-            SampleFormat::UInt16 => {
-                let mut buf = ArrayD::<u16>::zeros(IxDyn(&[total_len]));
-                // TODO: fill buffer
-                Ok(ImageData::UInt16(
-                    buf.into_shape(self.geometry.as_slice())
-                        .into_report()
-                        .change_context(ReadDataBlockError)
-                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
-                ))
-            }
-            SampleFormat::UInt32 => {
-                let mut buf = ArrayD::<u32>::zeros(IxDyn(&[total_len]));
-                // TODO: fill buffer
-                Ok(ImageData::UInt32(
-                    buf.into_shape(self.geometry.as_slice())
-                        .into_report()
-                        .change_context(ReadDataBlockError)
-                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
-                ))
-            }
-            SampleFormat::UInt64 => {
-                let mut buf = ArrayD::<u64>::zeros(IxDyn(&[total_len]));
-                // TODO: fill buffer
-                Ok(ImageData::UInt64(
-                    buf.into_shape(self.geometry.as_slice())
-                        .into_report()
-                        .change_context(ReadDataBlockError)
-                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
-                ))
-            }
-            SampleFormat::Float32 => {
-                let mut buf = ArrayD::<f32>::zeros(IxDyn(&[total_len]));
-                // TODO: fill buffer
-                Ok(ImageData::Float32(
-                    buf.into_shape(self.geometry.as_slice())
-                        .into_report()
-                        .change_context(ReadDataBlockError)
-                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
-                ))
-            }
-            SampleFormat::Float64 => {
-                let mut buf = ArrayD::<f64>::zeros(IxDyn(&[total_len]));
-                // TODO: fill buffer
-                Ok(ImageData::Float64(
-                    buf.into_shape(self.geometry.as_slice())
-                        .into_report()
-                        .change_context(ReadDataBlockError)
-                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
-                ))
-            }
+            SampleFormat::UInt8 => Ok(ImageData::UInt8(
+                self.read_data_impl(&mut reader,
+                    Box::<dyn Read>::read_exact,
+                    Box::<dyn Read>::read_exact
+                )?
+            )),
+            SampleFormat::UInt16 => Ok(ImageData::UInt16(
+                self.read_data_impl(&mut reader,
+                    Box::<dyn Read>::read_u16_into::<LE>,
+                    Box::<dyn Read>::read_u16_into::<BE>
+                )?
+            )),
+            SampleFormat::UInt32 => Ok(ImageData::UInt32(
+                self.read_data_impl(&mut reader,
+                    Box::<dyn Read>::read_u32_into::<LE>,
+                    Box::<dyn Read>::read_u32_into::<BE>
+                )?
+            )),
+            SampleFormat::UInt64 => Ok(ImageData::UInt64(
+                self.read_data_impl(&mut reader,
+                    Box::<dyn Read>::read_u64_into::<LE>,
+                    Box::<dyn Read>::read_u64_into::<BE>
+                )?
+            )),
+            SampleFormat::Float32 => Ok(ImageData::Float32(
+                self.read_data_impl(&mut reader,
+                    Box::<dyn Read>::read_f32_into::<LE>,
+                    Box::<dyn Read>::read_f32_into::<BE>
+                )?
+            )),
+            SampleFormat::Float64 => Ok(ImageData::Float64(
+                self.read_data_impl(&mut reader,
+                    Box::<dyn Read>::read_f64_into::<LE>,
+                    Box::<dyn Read>::read_f64_into::<BE>
+                )?
+            )),
             SampleFormat::Complex32 => {
-                let mut buf = ArrayD::<Complex<f32>>::zeros(IxDyn(&[total_len]));
-                // TODO: fill buffer
-                Ok(ImageData::Complex32(
-                    buf.into_shape(self.geometry.as_slice())
-                        .into_report()
-                        .change_context(ReadDataBlockError)
-                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
-                ))
+                // TODO read complex images
+                Err(report!(ReadDataBlockError))
+                    .attach_printable("Reading complex-valued images is not yet supported")
             }
             SampleFormat::Complex64 => {
-                let mut buf = ArrayD::<Complex<f64>>::zeros(IxDyn(&[total_len]));
-                // TODO: fill buffer
-                Ok(ImageData::Complex64(
-                    buf.into_shape(self.geometry.as_slice())
-                        .into_report()
-                        .change_context(ReadDataBlockError)
-                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
-                ))
+                // TODO read complex images
+                Err(report!(ReadDataBlockError))
+                    .attach_printable("Reading complex-valued images is not yet supported")
             }
         }
+    }
+
+    // TODO: extract out some of this to DataBlock for re-use with vector and matrix blocks
+    // TODO: do I actually need to zero out that memory? `ArrayBase::uninit()` looks like a tempting way to save cycles
+    // TODO: handle out of memory errors gracefully instead of panicking, which I assume is the default behavior
+    // F1 and F2 have identical signatures, but they need to be separate
+    // because two functions with the same signature are not technically the same type according to rust
+    fn read_data_impl<T, F1, F2>(&self, reader: &mut Box<dyn Read>, read_le: F1, read_be: F2) -> Result<ArrayD<T>, Report<ReadDataBlockError>>
+        where F1: Fn(&mut Box<dyn Read>, &mut [T]) -> std::io::Result<()>,
+        F2: Fn(&mut Box<dyn Read>, &mut [T]) -> std::io::Result<()>,
+        T: Clone + num_traits::Zero {
+        let mut buf;
+        match self.pixel_storage {
+            PixelStorage::Planar => {
+                buf = ArrayD::<T>::zeros(IxDyn(&self.geometry[..]));
+                let buf_slice = buf.as_slice_mut()
+                    .ok_or(report!(ReadDataBlockError))
+                    .attach_printable("Failed to get write access to output buffer")?;
+                match self.data_block.byte_order {
+                    ByteOrder::Big => read_be(reader, buf_slice),
+                    ByteOrder::Little => read_le(reader, buf_slice),
+                }.into_report().change_context(ReadDataBlockError)?;
+            }
+            PixelStorage::Normal => {
+                let mut geometry = self.geometry.clone();
+                geometry.rotate_left(1);
+                buf = ArrayD::<T>::zeros(IxDyn(&geometry[..]));
+                let buf_slice = buf.as_slice_mut()
+                    .ok_or(report!(ReadDataBlockError))
+                    .attach_printable("Failed to get write access to output buffer")?;
+                match self.data_block.byte_order {
+                    ByteOrder::Big => read_be(reader, buf_slice),
+                    ByteOrder::Little => read_le(reader, buf_slice),
+                }.into_report().change_context(ReadDataBlockError)?;
+                // move the channel axis to the beginning instead of the end
+                let mut axes: Vec<_> = (0..self.geometry.len()).into_iter().collect();
+                axes.rotate_right(1);
+                buf = buf.permuted_axes(axes.as_slice());
+                // and apply the transformation to the memory layout
+                buf = buf.as_standard_layout().to_owned();
+            }
+        }
+        Ok(buf)
     }
 }
 
@@ -291,17 +324,17 @@ pub enum ImageType {
     WeightMap,
 }
 
-#[derive(Clone, Copy, Debug, Display, Default, EnumString)]
+#[derive(Clone, Copy, Debug, Display, Default, EnumString, EnumVariantNames)]
 pub enum PixelStorage {
     #[default]
-    Planar,
-    Normal
+    Planar, // channels are contiguous in memory
+    Normal, // pixels are contiguous in memory
 }
 
-#[derive(Clone, Copy, Debug, Display, Default, EnumString)]
+#[derive(Clone, Copy, Debug, Display, Default, EnumString, EnumVariantNames)]
 pub enum ColorSpace {
     #[default]
-    Grayscale,
+    Gray,
     RGB,
     CIELab,
 }
