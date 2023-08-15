@@ -176,12 +176,14 @@ impl XISF {
             .attach_printable("No root element found in XML header")?;
 
         // we need to pass down a global xpath context in order to resolve <Reference> elements
+        // using the root element instead of the document node because
         let xpath = XpathContext::from_node(&xml.get_root_element().unwrap())
             .map_err(|_| report!(ReadFileError))
             .attach_printable("Failed to create XPATH context for XML header")?;
 
-        // xisf root element assigns a default namespace, but does not associate a prefix with it
+        // xisf root element should have a default namespace, but does not associate a prefix with it
         // in order to select these nodes by name with xpath, we have to assign them a prefix ourselves
+        // ! spec doesn't require this namespace to exist -- how to handle?
         xpath.register_namespace("xisf", "http://www.pixinsight.com/xisf")
             .map_err(|_| report!(ReadFileError))
             .attach_printable("Failed to associate prefix to xisf namespace in XML header")?;

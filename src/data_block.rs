@@ -1,24 +1,87 @@
 use std::{
-    any::type_name,
+    collections::HashMap,
+    fmt,
     num::NonZeroU8,
     path::PathBuf,
+    str::FromStr,
 };
 
 use error_stack::{Report, IntoReport, ResultExt, report};
-use libxml::{readonly::RoNode, tree::NodeType};
+use libxml::{readonly::RoNode, tree::NodeType, xpath::Context as XpathContext};
 use parse_int::parse as parse_auto_radix;
 use strum::{EnumString, Display};
 use url::Url;
 use crate::error::{ParseValueError, ParseNodeError};
 
-#[derive(Clone, Copy, Debug, Default, Display, EnumString)]
-pub enum Encoding {
-    #[default]
-    Base64,
-    Hex, // hexadecimal (base 16), must be serialized lowercase
+
+#[derive(Debug, Clone)]
+pub struct DataBlock {
+    pub location: DataBlockLocation,
+    pub byte_order: ByteOrder,
+    pub checksum: Option<Checksum>,
+    pub compression: Option<Compression>,
+    pub sub_blocks: SubBlocks, // wrapper for Vec<(usize, usize)>, empty vec indicates compression is not using sub-blocks
+}
+impl DataBlock {
+    // returns Ok(Some(_)) if a data block was successfully parsed
+    // returns Ok(None) if there is no data block to parse
+    // returns Err(_) if there was an error parsing the data block
+    // passing &mut attrs isn't for the benefit of this function, but the caller function
+    // (helps cut down on unnecessary "ignoring unrecognized attribute" warnings)
+    pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext, context: ParseNodeError, attrs: &mut HashMap<String, String>) -> Result<Option<Self>, Report<ParseNodeError>> {
+        // TODO: move the code to grab the data from inline and embedded over to here, and remove DataBlockLocation::parse_node in favor of a more standard FromStr implementation
+        if let Some(location) = DataBlockLocation::parse_node(node, xpath, context, attrs)? {
+            let byte_order = match attrs.remove("byteOrder") {
+                Some(byte_order) => {
+                    byte_order.parse::<ByteOrder>()
+                        .into_report()
+                        .change_context(context)
+                        .attach_printable_lazy(|| format!("Invalid byteOrder attribute: expected one of [big, little], found {byte_order}"))?
+                },
+                None => Default::default(),
+            };
+
+            let checksum = match attrs.remove("checksum") {
+                Some(checksum) => Some(
+                    checksum.parse::<Checksum>()
+                        .change_context(context)
+                        .attach_printable("Invalid checksum attribute")?
+                ),
+                None => None,
+            };
+
+            let compression = match attrs.remove("compression") {
+                Some(compression) => Some(
+                    compression.parse::<Compression>()
+                        .change_context(context)
+                        .attach_printable("Invalid compression attribute")?
+                ),
+                None => None,
+            };
+
+            let sub_blocks = match attrs.remove("subblocks") {
+                Some(compression) => {
+                    compression.parse::<SubBlocks>()
+                        .change_context(context)
+                        .attach_printable("Invalid subblocks attribute")?
+                },
+                None => SubBlocks(vec![]),
+            };
+
+            Ok(Some(DataBlock {
+                location,
+                byte_order,
+                checksum,
+                compression,
+                sub_blocks,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DataBlockLocation {
     Inline {
         // data is encoded in a child text node
@@ -53,8 +116,10 @@ impl DataBlockLocation {
     // returns Ok(Some(_)) if a data block location was successfully parsed
     // returns Ok(None) if there is no location attribute
     // returns Err(_) if there was an error parsing the data block location
-    pub(crate) fn from_node(node: RoNode, context: ParseNodeError) -> Result<Option<Self>, Report<ParseNodeError>> {
-        if let Some(attr) = node.get_attribute("location") {
+    // passing &mut attrs isn't for the benefit of this function, but the caller function
+    // (helps cut down on unnecessary "ignoring unrecognized attribute" warnings)
+    pub(crate) fn parse_node(node: RoNode, _xpath: &XpathContext, context: ParseNodeError, attrs: &mut HashMap<String, String>) -> Result<Option<Self>, Report<ParseNodeError>> {
+        if let Some(attr) = attrs.remove("location") {
             match attr.split(":").collect::<Vec<_>>().as_slice() {
                 &["inline", encoding] => {
                     let encoding = encoding.parse::<Encoding>()
@@ -181,7 +246,16 @@ impl DataBlockLocation {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Display, EnumString)]
+#[derive(Clone, Copy, Debug, Default, Display, EnumString, PartialEq)]
+pub enum Encoding {
+    #[default]
+    #[strum(serialize = "base64")]
+    Base64,
+    #[strum(serialize = "hex")]
+    Hex, // hexadecimal (base 16), must be serialized with a-f in lowercase
+}
+
+#[derive(Clone, Copy, Debug, Default, Display, EnumString, PartialEq)]
 pub enum ByteOrder {
     #[strum(serialize = "big")]
     Big,
@@ -190,7 +264,7 @@ pub enum ByteOrder {
     Little,
 }
 
-#[derive(Clone, Copy, Debug, Display, EnumString)]
+#[derive(Clone, Copy, Debug, Display, EnumString, PartialEq)]
 pub enum ChecksumAlgorithm {
     #[strum(serialize = "sha-1", serialize = "sha1")]
     Sha1,
@@ -204,7 +278,78 @@ pub enum ChecksumAlgorithm {
     Sha3_512,
 }
 
-#[derive(Clone, Copy, Debug, Display, EnumString)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum Checksum {
+    Sha1([u8; 20]),
+    Sha256([u8; 32]),
+    Sha512([u8; 64]),
+    Sha3_256([u8; 32]),
+    Sha3_512([u8; 64]),
+}
+impl fmt::Display for Checksum {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fn to_hex(digest: &[u8]) -> String {
+            hex_simd::encode_to_string(digest, hex_simd::AsciiCase::Lower)
+        }
+        match &self {
+            Self::Sha1(digest) => f.write_fmt(format_args!("sha-1:{}", to_hex(digest))),
+            Self::Sha256(digest) => f.write_fmt(format_args!("sha-256:{}", to_hex(digest))),
+            Self::Sha512(digest) => f.write_fmt(format_args!("sha-512:{}", to_hex(digest))),
+            Self::Sha3_256(digest) => f.write_fmt(format_args!("sha3-256:{}", to_hex(digest))),
+            Self::Sha3_512(digest) => f.write_fmt(format_args!("sha3-512:{}", to_hex(digest))),
+        }
+    }
+}
+impl FromStr for Checksum {
+    type Err = Report<ParseValueError>;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        const CONTEXT: ParseValueError = ParseValueError("Checksum");
+
+        fn from_hex(digest: &str, out: &mut [u8]) -> Result<(), Report<ParseValueError>> {
+            use hex_simd::AsOut;
+            // the comment on this function says it panics if the dest buffer is not large enough,
+            // but this is not true -- it returns an Err
+            hex_simd::decode(digest.as_bytes(), out[..].as_out())
+                .map(|_| ())
+                .into_report()
+                .change_context(CONTEXT)
+                .attach_printable("Failed to decode checksum digest from hexadecimal")
+        }
+
+        match s.split_once(":") {
+            Some(("sha-1" | "sha1", hex_digest)) => {
+                let mut buf = [0u8; 20];
+                from_hex(hex_digest, &mut buf[..])?;
+                Ok(Self::Sha1(buf))
+            },
+            Some(("sha-256" | "sha256", hex_digest)) => {
+                let mut buf = [0u8; 32];
+                from_hex(hex_digest, &mut buf[..])?;
+                Ok(Self::Sha256(buf))
+            },
+            Some(("sha-512" | "sha512", hex_digest)) => {
+                let mut buf = [0u8; 64];
+                from_hex(hex_digest, &mut buf[..])?;
+                Ok(Self::Sha512(buf))
+            },
+            Some(("sha3-256", hex_digest)) => {
+                let mut buf = [0u8; 32];
+                from_hex(hex_digest, &mut buf[..])?;
+                Ok(Self::Sha3_256(buf))
+            },
+            Some(("sha3-512", hex_digest)) => {
+                let mut buf = [0u8; 64];
+                from_hex(hex_digest, &mut buf[..])?;
+                Ok(Self::Sha3_512(buf))
+            },
+            _bad => Err(report!(CONTEXT))
+                .attach_printable(format!("Unrecognized pattern: expected checksum-algorithm:hex-digest, found {s}"))
+                .attach_printable("Supported checksum algorithms: sha-1, sha-256, sha-512, sha3-256, sha3-512")
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Display, EnumString, PartialEq)]
 pub enum CompressionAlgorithm {
     #[strum(serialize = "zlib")]
     Zlib,
@@ -220,7 +365,120 @@ pub enum CompressionAlgorithm {
     Lz4HCByteShuffling,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, PartialEq)]
+pub enum Compression {
+    Zlib(usize),
+    ZlibByteShuffling(usize, usize),
+    Lz4(usize),
+    Lz4ByteShuffling (usize, usize),
+    Lz4HC(usize),
+    Lz4HCByteShuffling(usize, usize),
+}
+impl fmt::Display for Compression {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Zlib(uncompressed_size) =>
+                f.write_fmt(format_args!("zlib:{uncompressed_size}")),
+            Self::ZlibByteShuffling(uncompressed_size, item_size) =>
+                f.write_fmt(format_args!("zlib+sh:{uncompressed_size}:{item_size}")),
+            Self::Lz4(uncompressed_size) =>
+                f.write_fmt(format_args!("lz4:{uncompressed_size}")),
+            Self::Lz4ByteShuffling(uncompressed_size, item_size) =>
+                f.write_fmt(format_args!("lz4+sh:{uncompressed_size}:{item_size}")),
+            Self::Lz4HC(uncompressed_size) =>
+                f.write_fmt(format_args!("lz4hc:{uncompressed_size}")),
+            Self::Lz4HCByteShuffling(uncompressed_size, item_size) =>
+                f.write_fmt(format_args!("lz4hc+sh:{uncompressed_size}:{item_size}")),
+        }
+    }
+}
+impl FromStr for Compression {
+    type Err = Report<ParseValueError>;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        const CONTEXT: ParseValueError = ParseValueError("Compression");
+        const UNCOMPRESSED_SIZE_ERR: &'static str = "Failed to read uncompressed size";
+        const ITEM_SIZE_ERR: &'static str = "Failed to read byte shuffling item size";
+        fn parse_size(size: &str, err_msg: &'static str) -> Result<usize, Report<ParseValueError>> {
+            parse_auto_radix::<usize>(size.trim())
+                .into_report()
+                .change_context(CONTEXT)
+                .attach_printable(err_msg)
+        }
+        match s.split(":").collect::<Vec<_>>().as_slice() {
+            &["zlib", uncompressed_size] => Ok(Self::Zlib(
+                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?
+            )),
+            &["zlib+sh", uncompressed_size, item_size] => Ok(Self::ZlibByteShuffling(
+                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
+                parse_size(item_size, ITEM_SIZE_ERR)?
+            )),
+            &["lz4", uncompressed_size] => Ok(Self::Lz4(
+                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?
+            )),
+            &["lz4+sh", uncompressed_size, item_size] => Ok(Self::Lz4ByteShuffling(
+                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
+                parse_size(item_size, ITEM_SIZE_ERR)?
+            )),
+            &["lz4hc", uncompressed_size] => Ok(Self::Lz4HC(
+                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?
+            )),
+            &["lz4hc+sh", uncompressed_size, item_size] => Ok(Self::Lz4HCByteShuffling(
+                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
+                parse_size(item_size, ITEM_SIZE_ERR)?
+            )),
+            _bad => Err(report!(CONTEXT)).attach_printable(format!(
+                "Unrecognized pattern: expected one of [zlib:len, zlib+sh:len:item-size, lz4:len, lz4+sh:len:item-size, lz4hc:len, lz4hc+sh:len:item-size], found {s}"
+            ))
+        }
+    }
+}
+
+// tuples of (compressed size, uncompressed size)
+#[derive(Clone, PartialEq)]
+pub struct SubBlocks(pub Vec<(u64, u64)>);
+impl fmt::Debug for SubBlocks {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl fmt::Display for SubBlocks {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.len() > 0 {
+            let s = self.0.iter()
+                .map(|(uncompressed_size, item_size)| format!("{uncompressed_size},{item_size}"))
+                .reduce(|acc, next| format!("{acc}:{next}"))
+                .unwrap(); // safe because the None only occurs when the iter is empty
+            f.write_str(s.as_str())
+        } else {
+            f.write_str("")
+        }
+    }
+}
+impl FromStr for SubBlocks {
+    type Err = Report<ParseValueError>;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        const CONTEXT: ParseValueError = ParseValueError("Compression Sub-Blocks");
+        let mut sub_blocks = vec![];
+        for token in s.split(":") {
+            if let Some((uncompressed_size, item_size)) = token.split_once(",") {
+                sub_blocks.push((
+                    parse_auto_radix::<u64>(uncompressed_size.trim())
+                        .into_report()
+                        .change_context(CONTEXT)?,
+
+                    parse_auto_radix::<u64>(item_size.trim())
+                        .into_report()
+                        .change_context(CONTEXT)?,
+                ));
+            } else {
+                return Err(report!(CONTEXT)).attach_printable(format!("Expected pattern x,i:y,j:..:z,k, found {s}"));
+            }
+        }
+        Ok(Self(sub_blocks))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum CompressionLevel {
     #[default]
     Auto,
@@ -231,9 +489,9 @@ impl CompressionLevel {
         match level {
             0 => Ok(Self::Auto),
             (1..=100) => Ok(Self::Value(NonZeroU8::new(level).unwrap())),
-            _ => Err(ParseValueError(level.to_string(), type_name::<Self>()))
+            bad => Err(ParseValueError("CompressionLevel"))
                 .into_report()
-                .attach_printable("Must be between 0 and 100")
+                .attach_printable(format!("Must be between 0 and 100, found {bad}"))
         }
     }
 }

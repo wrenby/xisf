@@ -4,10 +4,10 @@ use std::{
 };
 
 #[derive(Clone, Debug)]
-pub struct ParseValueError(pub String, pub &'static str);
+pub struct ParseValueError(pub &'static str);
 impl Display for ParseValueError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("Failed to parse value \"{}\" as {}", self.0, self.1))
+        f.write_fmt(format_args!("Failed to parse {}", self.0))
     }
 }
 impl Error for ParseValueError {}

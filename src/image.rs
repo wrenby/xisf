@@ -1,12 +1,12 @@
 use error_stack::{IntoReport, Report, report, ResultExt};
 use libxml::{readonly::RoNode, xpath::Context as XpathContext};
-use ndarray::ArrayD;
+use ndarray::{ArrayD, IxDyn};
 use num_complex::Complex;
 use parse_int::parse as parse_auto_radix;
 use strum::{Display, EnumString, EnumVariantNames, VariantNames};
 use uuid::Uuid;
 use crate::{
-    data_block::DataBlockLocation,
+    data_block::DataBlock,
     error::ReadDataBlockError,
     ReadOptions,
     ParseNodeError,
@@ -84,8 +84,8 @@ pub enum ColorSpace {
 pub struct Image {
     pub uid: Option<String>,
 
-    pub data_block: DataBlockLocation,
-    pub geometry: Vec<u64>,
+    pub data_block: DataBlock,
+    pub geometry: Vec<usize>,
     pub sample_format: SampleFormat,
 
     // for images in a non-RGB color space, these bounds apply to pixel sample values once converted to RGB, not in its native color space
@@ -109,15 +109,14 @@ impl Image {
         // saying we don't know what so-and-so attribute means
         let mut attrs = node.get_attributes();
 
-        let data_block = DataBlockLocation::from_node(node, CONTEXT)?
+        let data_block = DataBlock::parse_node(node, xpath, CONTEXT, &mut attrs)?
             .ok_or(report!(CONTEXT))
             .attach_printable("Missing location attribute: <Image> nodes must have a data block")?;
-        attrs.remove("location");
 
-        let mut geometry: Vec<u64> = vec![];
+        let mut geometry: Vec<usize> = vec![];
         if let Some(dims) = attrs.remove("geometry") {
             for i in dims.split(":") {
-                let dim = parse_auto_radix::<u64>(i.trim())
+                let dim = parse_auto_radix::<usize>(i.trim())
                     .into_report()
                     .change_context(CONTEXT)
                     .attach_printable("Invalid geometry attribute: failed to parse dimension/channel count")
@@ -210,17 +209,95 @@ impl Image {
     pub fn num_dimensions(&self) -> usize {
         self.geometry.len() - 1
     }
-    pub fn num_channels(&self) -> u64 {
+    pub fn num_channels(&self) -> usize {
         self.geometry[self.geometry.len() - 1]
     }
 
+    // get the compiler to pipe down while I'm just trying to hack something together
+    #[allow(unused_mut)]
     pub fn read_data(&self) -> Result<ImageData, Report<ReadDataBlockError>> {
-        todo!()
-    }
-    // fn read_data_impl<T>(&self) -> Result<ImageData, Report<ReadDataBlockError>> {
-
-    // }
-    pub async fn read_data_async(&self) -> Result<ImageData, Report<ReadDataBlockError>> {
-        todo!()
+        let total_len = self.geometry.iter().fold(1, |acc, n| acc * n);
+        match self.sample_format {
+            SampleFormat::UInt8 => {
+                let mut buf = ArrayD::<u8>::zeros(IxDyn(&[total_len]));
+                // TODO: fill buffer
+                Ok(ImageData::UInt8(
+                    buf.into_shape(self.geometry.as_slice())
+                        .into_report()
+                        .change_context(ReadDataBlockError)
+                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
+                ))
+            }
+            SampleFormat::UInt16 => {
+                let mut buf = ArrayD::<u16>::zeros(IxDyn(&[total_len]));
+                // TODO: fill buffer
+                Ok(ImageData::UInt16(
+                    buf.into_shape(self.geometry.as_slice())
+                        .into_report()
+                        .change_context(ReadDataBlockError)
+                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
+                ))
+            }
+            SampleFormat::UInt32 => {
+                let mut buf = ArrayD::<u32>::zeros(IxDyn(&[total_len]));
+                // TODO: fill buffer
+                Ok(ImageData::UInt32(
+                    buf.into_shape(self.geometry.as_slice())
+                        .into_report()
+                        .change_context(ReadDataBlockError)
+                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
+                ))
+            }
+            SampleFormat::UInt64 => {
+                let mut buf = ArrayD::<u64>::zeros(IxDyn(&[total_len]));
+                // TODO: fill buffer
+                Ok(ImageData::UInt64(
+                    buf.into_shape(self.geometry.as_slice())
+                        .into_report()
+                        .change_context(ReadDataBlockError)
+                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
+                ))
+            }
+            SampleFormat::Float32 => {
+                let mut buf = ArrayD::<f32>::zeros(IxDyn(&[total_len]));
+                // TODO: fill buffer
+                Ok(ImageData::Float32(
+                    buf.into_shape(self.geometry.as_slice())
+                        .into_report()
+                        .change_context(ReadDataBlockError)
+                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
+                ))
+            }
+            SampleFormat::Float64 => {
+                let mut buf = ArrayD::<f64>::zeros(IxDyn(&[total_len]));
+                // TODO: fill buffer
+                Ok(ImageData::Float64(
+                    buf.into_shape(self.geometry.as_slice())
+                        .into_report()
+                        .change_context(ReadDataBlockError)
+                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
+                ))
+            }
+            SampleFormat::Complex32 => {
+                let mut buf = ArrayD::<Complex<f32>>::zeros(IxDyn(&[total_len]));
+                // TODO: fill buffer
+                Ok(ImageData::Complex32(
+                    buf.into_shape(self.geometry.as_slice())
+                        .into_report()
+                        .change_context(ReadDataBlockError)
+                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
+                ))
+            }
+            SampleFormat::Complex64 => {
+                let mut buf = ArrayD::<Complex<f64>>::zeros(IxDyn(&[total_len]));
+                // TODO: fill buffer
+                Ok(ImageData::Complex64(
+                    buf.into_shape(self.geometry.as_slice())
+                        .into_report()
+                        .change_context(ReadDataBlockError)
+                        .attach_printable("Failed to shape ndarray buffer to fit requested image dimensions")?
+                ))
+            }
+        }
     }
 }
