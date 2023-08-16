@@ -1,4 +1,4 @@
-use std::{io::{Read, Write}, fmt, str::FromStr};
+use std::{io::{Read, Write, Cursor}, fmt, str::FromStr};
 
 use byteorder::{ReadBytesExt, LE, BE};
 use digest::Digest;
@@ -261,9 +261,25 @@ impl Image {
         }
 
         match &self.data_block.compression {
-            // TODO byte shuffling: I think I can use multi_slice_mut for this?
-            Some(any) if any.is_shuffled() => return Err(report!(ReadDataBlockError))
-                .attach_printable("Byte shuffling is not yet supported"),
+            Some(compression) if compression.is_shuffled() => {
+                let item_size = compression.shuffle_item_size().unwrap();
+                // byte shuffling is a nop for 1 or 0 size items
+                // not sure why any implementation would encode it like this, but best to save the clone I guess
+                if item_size > 1 {
+                    let n = compression.uncompressed_size() / item_size;
+                    if n * item_size != compression.uncompressed_size() {
+                        return Err(report!(ReadDataBlockError)).attach_printable("Uncompressed size is not divisible by item size")
+                    }
+                    // to unshuffle, call this same code block &[n, item_size] instead of &[item_size, n]
+                    let mut buf = ArrayD::<u8>::zeros(IxDyn(&[n, item_size]));
+                    reader.read_exact(buf.as_slice_memory_order_mut().unwrap())
+                        .into_report()
+                        .change_context(ReadDataBlockError)
+                        .attach_printable("Failed to read bytes into temporary buffer for unshuffling")?;
+                    buf.swap_axes(0, 1);
+                    reader = Box::new(Cursor::new(buf.as_standard_layout().to_owned().into_raw_vec()));
+                }
+            }
             _ => (),
         }
 

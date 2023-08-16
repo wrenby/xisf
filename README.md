@@ -12,17 +12,17 @@ Monolithic Files | Decode | Encode + Decode | Encode + Decode
 Distributed Files | :x: | :x: | :x:
 Root Element Child Types | Image (N-D) | Image ([2D only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816)), Metadata<sup>1</sup> | Image ([2D only](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001))<sup>2</sup>, Metadata
 Pixel Sample Formats | Scalar | Agnostic (Raw Bytes Only) | Scalar ([except 64-bit integers](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L599)), Complex
-Image Metadata Nodes | :x: | FITS Keywords, XISF Properties<sup>3</sup>, Thumbnail, CFA, ICC Profile | ✅<sup>4</sup>
+Image Metadata Nodes | :x: | FITS Keywords, XISF Properties<sup>3</sup>, Thumbnail, CFA, ICC Profile | :white_check_mark:<sup>4</sup>
 Data Block Compression | `zlib`, `lz4`, `lz4hc`<sup>5</sup> | `zlib`, `lz4`, `lz4hc`, `zstd`<sup>6</sup> | `zlib`, `lz4`, `lz4hc`
-Checksum Verification | ✅ | :x: | ✅
+Checksum Verification | :white_check_mark: | :x: | :white_check_mark:
 Reference Element | :x: | :x: | :x:
-XML Signature Verification | :x: | :x: | :x:
+XML Digital Signature Verification | :x: | :x: | :x:
 
 1. [Image is missing offset, orientation, id, and uuid attributes](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L815); Metadata is encoder-only, and [only supports XISF:CreationTime and XISF:CreatorApplication](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L1071) property keys
 2. Missing imageType, offset, orientation, and uuid attributes
 3. [Int32, Float32, Float64, String, and TimePoint only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/variant.cpp#L379), and only on Image elements
 4. Does not support `<Table>` properties
-5. Byte shuffling and sub-blocks not yet supported
+5. Sub-blocks not yet supported
 6. Sub-blocks not yet supported; `zstd` support is nonstandard
 
 ## Dependencies
@@ -37,8 +37,7 @@ XML Signature Verification | :x: | :x: | :x:
   - Supports `Planar` and `Normal` pixel storage modes
     - Consider not enforcing a read into `Planar`-organized memory: how to associate an image geometry with the array if its shape is no longer an indicator?
 - [x] Data block compression
-  - Not quite at baseline support: doesn't respect the `subblocks` attribute, meaning this implementation is limited to 4GiB files, and doesn't shuffle bytes yet
-  - Byte shuffling is fundamentally the same transformation as turning `Planar` pixel storage into `Normal`, just on the byte level
+  - Not quite at baseline support: doesn't respect the `subblocks` attribute, meaning this implementation is limited to 4GiB files
 - [x] Checksum verification
 - [ ] Make a decent public API instead of leaving everything `pub`
   - `ReadOptions` and `WriteOptions` should probably have Builders to avoid breaking changes if I add something new
