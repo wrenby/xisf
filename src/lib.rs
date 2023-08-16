@@ -2,7 +2,6 @@ use byteorder::{LittleEndian, ReadBytesExt};
 use error_stack::{IntoReport, Report, ResultExt, report};
 use libxml::{
     parser::Parser as XmlParser,
-    tree::NodeType,
     readonly::RoNode,
     xpath::Context as XpathContext,
 };
@@ -80,7 +79,6 @@ impl WriteOptions {
 #[derive(Clone, Debug)]
 pub struct XISF {
     pub filename: PathBuf,
-    pub initial_comment: Option<String>,
     pub images: Vec<Image>,
 }
 impl XISF {
@@ -162,15 +160,6 @@ impl XISF {
                 .attach_printable("XISF spec requires UTF-8 encoding in XML declaration")
         }
 
-        // the spec disallows parsers from using the content of this comment to change its behavior,
-        // but it doesn't forbid us from making note of it, just in case anyone cares
-        let comment = xml.as_node()
-            .get_child_nodes()
-            .into_iter()
-            .filter(|n| n.get_type() == Some(NodeType::CommentNode))
-            .next()
-            .map(|n| n.get_content());
-
         let root = xml.get_root_readonly()
             .ok_or(report!(ReadFileError))
             .attach_printable("No root element found in XML header")?;
@@ -193,12 +182,6 @@ impl XISF {
 
         Self::parse_root_node(root, &xpath, filename, opts)
             .change_context(ReadFileError)
-            .map(|xisf| {
-                Self { // surgically reinsert the comment for safekeeping
-                    initial_comment: comment,
-                    ..xisf
-                }
-            })
     }
 
     fn parse_root_node(node: RoNode, xpath: &XpathContext, filename: impl AsRef<Path>, opts: &ReadOptions) -> Result<XISF, Report<ParseNodeError>> {
@@ -242,7 +225,6 @@ impl XISF {
 
         Ok(XISF {
             filename: filename.as_ref().to_owned(),
-            initial_comment: None,
             images,
         })
     }
