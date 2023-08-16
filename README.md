@@ -11,7 +11,7 @@ License | MIT | GPLv3 | Custom
 Monolithic Files | Decode | Encode + Decode | Encode + Decode
 Distributed Files | ❌ | ❌ | ❌
 Root Element Child Types | Image (N-D) | Image ([2D only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816)), Metadata<sup>1</sup> | Image ([2D only](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001))<sup>2</sup>, Metadata
-Pixel Sample Formats | Scalar | [Scalar](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L456) | Scalar ([except 64-bit integers](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L599)), Complex
+Pixel Sample Formats | Scalar | Raw Bytes Only | Scalar ([except 64-bit integers](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L599)), Complex
 Image Metadata Nodes | ❌ | FITS Keywords, XISF Properties<sup>3</sup>, Thumbnail, CFA, ICC Profile | ✅<sup>4</sup>
 Data Block Compression | `zlib`, `lz4`, `lz4hc`<sup>5</sup> | `zlib`, `lz4`, `lz4hc`, `zstd`<sup>6</sup> | `zlib`, `lz4`, `lz4hc`
 Checksum Verification | ✅ | ❌ | ✅
@@ -69,6 +69,7 @@ XML Signature Verification | ❌ | ❌ | ❌
   - `remotefs` crate? Covers (S)FTP+SCP+SMB+S3, that plus an HTTP(S) client should cover most use cases
   - Some kind of file cache to avoid re-downloading? Check for changes in file size and last modified with `stat` to ensure up-to-date, and make an option to re-download a specific file in `DataBlock`'s read functions
     - HTTP(S) supports a more fine-grained cache with `ETag`/`If-None-Match`, `Last-Modified`/`If-Modified-Since` and `Cache-Control` headers
+    - Consider `tempfile`, `memmap2` crates
 - [ ] Vector, Matrix `<Property>` elements
   - Need to look at `cfitsio` for inspiration here
 - [ ] XML Digital Signature verification

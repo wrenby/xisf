@@ -79,7 +79,6 @@ impl WriteOptions {
 
 #[derive(Clone, Debug)]
 pub struct XISF {
-    // TODO: this approach isn't future proof for if I ever want to load from a memory block instead of a file
     pub filename: PathBuf,
     pub initial_comment: Option<String>,
     pub images: Vec<Image>,

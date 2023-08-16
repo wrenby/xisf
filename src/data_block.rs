@@ -244,14 +244,7 @@ impl DataBlockReference {
         }
     }
 
-    // TODO: consider passing &mut crate::XISF and storing + reading from the BufReader used to open the file
-    // seems like the only way to do it if I want to be able to read files from memory or a byte stream down the road
-    // would have to make a custom supertrait for Read + Seek
-    // TODO: how to avoid duplicating the data in memory while verifying checksums?
-    // * verifying checksums and decompressing data are out of the scope of this function
-    // in order to provide a method to verify checksums, reading is
-    // ! if byte shuffling was enabled, this byte stream will still be shuffled
-    // - no way around this without duplication, which is unacceptable for an image format storing arbitrarily large raw images
+    // literally just a byte stream, with no knowledge of compression, byte shuffling, or checksums
     pub(crate) fn raw_bytes(&self, xisf: &crate::XISF) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
         let base64 = base64_simd::STANDARD;
         match self {
@@ -286,6 +279,8 @@ impl DataBlockReference {
         }
     }
 
+    // ! if byte shuffling was enabled, this byte stream will still be shuffled
+    // - no way around this without duplication, which is unacceptable for an image format storing arbitrarily large raw images
     pub(crate) fn decompressed_bytes(&self, xisf: &crate::XISF, compression: &Option<Compression>) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
         let raw = self.raw_bytes(xisf)?;
         if let Some(compression) = compression {

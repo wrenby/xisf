@@ -317,7 +317,6 @@ impl Image {
     }
 
     // TODO: extract out some of this to DataBlock for re-use with vector and matrix blocks
-    // TODO: do I actually need to zero out that memory? `ArrayBase::uninit()` looks like a tempting way to save cycles
     // TODO: handle out of memory errors gracefully instead of panicking, which I assume is the default behavior
     // TODO: read normal pixel storage and byte-shuffled compression without duplicating the whole image
     // F1 and F2 have identical signatures, but they need to be separate
