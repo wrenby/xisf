@@ -9,16 +9,14 @@ An unaffiliated implementation of Pleiades Astrophoto's open-source Extensible I
 Language | Rust | C++ | C++
 License | MIT | GPLv3 | Custom
 Monolithic Files | Decode | Encode + Decode | Encode + Decode
-Distributed Files | ❌ | ❌ | ❌
+Distributed Files | :x: | :x: | :x:
 Root Element Child Types | Image (N-D) | Image ([2D only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816)), Metadata<sup>1</sup> | Image ([2D only](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001))<sup>2</sup>, Metadata
-Pixel Sample Formats | Scalar | Raw Bytes Only | Scalar ([except 64-bit integers](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L599)), Complex
-Image Metadata Nodes | ❌ | FITS Keywords, XISF Properties<sup>3</sup>, Thumbnail, CFA, ICC Profile | ✅<sup>4</sup>
+Pixel Sample Formats | Scalar | Agnostic (Raw Bytes Only) | Scalar ([except 64-bit integers](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L599)), Complex
+Image Metadata Nodes | :x: | FITS Keywords, XISF Properties<sup>3</sup>, Thumbnail, CFA, ICC Profile | :heavy_check_mark:<sup>4</sup>
 Data Block Compression | `zlib`, `lz4`, `lz4hc`<sup>5</sup> | `zlib`, `lz4`, `lz4hc`, `zstd`<sup>6</sup> | `zlib`, `lz4`, `lz4hc`
-Checksum Verification | ✅ | ❌ | ✅
-Reference Element | ❌ | ❌ | ❌
-XML Signature Verification | ❌ | ❌ | ❌
-
-<!-- complex support? -->
+Checksum Verification | :heavy_check_mark: | :x: | :heavy_check_mark:
+Reference Element | :x: | :x: | :x:
+XML Signature Verification | :x: | :x: | :x:
 
 1. [Image is missing offset, orientation, id, and uuid attributes](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L815); Metadata is encoder-only, and [only supports XISF:CreationTime and XISF:CreatorApplication](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L1071) property keys
 2. Missing imageType, offset, orientation, and uuid attributes
