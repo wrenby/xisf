@@ -9,16 +9,17 @@ use std::{
 };
 
 use error_stack::{Report, IntoReport, ResultExt, report};
+use flate2::read::ZlibDecoder;
 use libxml::{readonly::RoNode, tree::NodeType, xpath::Context as XpathContext};
 use parse_int::parse as parse_auto_radix;
-use strum::{EnumString, Display};
+use strum::{EnumString, Display, EnumVariantNames};
 use url::Url;
 use crate::error::{ParseValueError, ParseNodeError, ReadDataBlockError};
 
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataBlock {
-    pub location: DataBlockLocation,
+    pub location: DataBlockReference,
     pub byte_order: ByteOrder,
     pub checksum: Option<Checksum>,
     pub compression: Option<Compression>,
@@ -32,7 +33,7 @@ impl DataBlock {
     // (helps cut down on unnecessary "ignoring unrecognized attribute" warnings)
     pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext, context: ParseNodeError, attrs: &mut HashMap<String, String>) -> Result<Option<Self>, Report<ParseNodeError>> {
         // TODO: move the code to grab the data from inline and embedded over to here, and remove DataBlockLocation::parse_node in favor of a more standard FromStr implementation
-        if let Some(location) = DataBlockLocation::parse_node(node, xpath, context, attrs)? {
+        if let Some(location) = DataBlockReference::parse_node(node, xpath, context, attrs)? {
             let byte_order = match attrs.remove("byteOrder") {
                 Some(byte_order) => {
                     byte_order.parse::<ByteOrder>()
@@ -84,7 +85,7 @@ impl DataBlock {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum DataBlockLocation {
+pub enum DataBlockReference {
     Plaintext {
         // inline or embedded: data is encoded in a child text or <Data> node
         encoding: Encoding,
@@ -109,7 +110,7 @@ pub enum DataBlockLocation {
         index_id: Option<u64>,
     }
 }
-impl DataBlockLocation {
+impl DataBlockReference {
     // returns Ok(Some(_)) if a data block location was successfully parsed
     // returns Ok(None) if there is no location attribute
     // returns Err(_) if there was an error parsing the data block location
@@ -246,10 +247,12 @@ impl DataBlockLocation {
     // TODO: consider passing &mut crate::XISF and storing + reading from the BufReader used to open the file
     // seems like the only way to do it if I want to be able to read files from memory or a byte stream down the road
     // would have to make a custom supertrait for Read + Seek
-    pub fn bytes(&self, xisf: &crate::XISF) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
-        // TODO: is it possible to have some kind of shim to transform the endianness on the fly?
-        // TODO: verify checksum (on compressed data, not uncompressed)
-        // TODO: decompress
+    // TODO: how to avoid duplicating the data in memory while verifying checksums?
+    // * verifying checksums and decompressing data are out of the scope of this function
+    // in order to provide a method to verify checksums, reading is
+    // ! if byte shuffling was enabled, this byte stream will still be shuffled
+    // - no way around this without duplication, which is unacceptable for an image format storing arbitrarily large raw images
+    pub(crate) fn raw_bytes(&self, xisf: &crate::XISF) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
         let base64 = base64_simd::STANDARD;
         match self {
             Self::Plaintext { encoding, text } => {
@@ -283,6 +286,27 @@ impl DataBlockLocation {
         }
     }
 
+    pub(crate) fn decompressed_bytes(&self, xisf: &crate::XISF, compression: &Option<Compression>) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
+        let raw = self.raw_bytes(xisf)?;
+        if let Some(compression) = compression {
+            match compression {
+                Compression::Zlib(..) | Compression::ZlibByteShuffling(..) => {
+                    Ok(Box::new(ZlibDecoder::new(raw)))
+                },
+                Compression::Lz4(..) | Compression::Lz4ByteShuffling(..) | Compression::Lz4HC(..) | Compression::Lz4HCByteShuffling(..) => {
+                    Ok(Box::new(
+                        lz4::Decoder::new(raw)
+                            .into_report()
+                            .change_context(ReadDataBlockError)
+                            .attach_printable("Failed to open Lz4 stream")?
+                    ))
+                }
+            }
+        } else {
+            Ok(raw)
+        }
+    }
+
     pub fn is_remote(&self) -> bool {
         match self {
             Self::Url { url, .. } if url.scheme() != "file" => true,
@@ -291,7 +315,7 @@ impl DataBlockLocation {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Display, EnumString, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum Encoding {
     #[default]
     #[strum(serialize = "base64")]
@@ -300,7 +324,7 @@ pub enum Encoding {
     Hex, // hexadecimal (base 16), must be serialized with a-f in lowercase
 }
 
-#[derive(Clone, Copy, Debug, Default, Display, EnumString, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum ByteOrder {
     #[strum(serialize = "big")]
     Big,
@@ -309,7 +333,7 @@ pub enum ByteOrder {
     Little,
 }
 
-#[derive(Clone, Copy, Debug, Display, EnumString, PartialEq)]
+#[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum ChecksumAlgorithm {
     #[strum(serialize = "sha-1", serialize = "sha1")]
     Sha1,
@@ -393,8 +417,19 @@ impl FromStr for Checksum {
         }
     }
 }
+impl Checksum {
+    pub fn as_slice(&self) -> &[u8] {
+        match self {
+            Checksum::Sha1(digest) => &digest[..],
+            Checksum::Sha256(digest) => &digest[..],
+            Checksum::Sha512(digest) => &digest[..],
+            Checksum::Sha3_256(digest) => &digest[..],
+            Checksum::Sha3_512(digest) => &digest[..],
+        }
+    }
+}
 
-#[derive(Clone, Copy, Debug, Display, EnumString, PartialEq)]
+#[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum CompressionAlgorithm {
     #[strum(serialize = "zlib")]
     Zlib,
@@ -409,7 +444,16 @@ pub enum CompressionAlgorithm {
     #[strum(serialize = "lz4hc+sh")]
     Lz4HCByteShuffling,
 }
+impl CompressionAlgorithm {
+    pub fn is_shuffled(&self) -> bool {
+        match self {
+            Self::Zlib | Self::Lz4 | Self::Lz4HC => false,
+            Self::ZlibByteShuffling | Self::Lz4ByteShuffling | Self::Lz4HCByteShuffling => true,
+        }
+    }
+}
 
+// TODO: integrate more closely with subblocks
 #[derive(Clone, Debug, PartialEq)]
 pub enum Compression {
     Zlib(usize),
@@ -418,6 +462,32 @@ pub enum Compression {
     Lz4ByteShuffling (usize, usize),
     Lz4HC(usize),
     Lz4HCByteShuffling(usize, usize),
+}
+impl Compression {
+    pub fn uncompressed_size(&self) -> usize {
+        match self {
+            &Compression::Zlib(size) => size,
+            &Compression::ZlibByteShuffling(size, _) => size,
+            &Compression::Lz4(size) => size,
+            &Compression::Lz4ByteShuffling(size, _) => size,
+            &Compression::Lz4HC(size) => size,
+            &Compression::Lz4HCByteShuffling(size, _) => size,
+        }
+    }
+    pub fn is_shuffled(&self) -> bool {
+        match self {
+            Self::Zlib(_) | Self::Lz4(_) | Self::Lz4HC(_) => false,
+            Self::ZlibByteShuffling(..) | Self::Lz4ByteShuffling(..) | Self::Lz4HCByteShuffling(..) => true,
+        }
+    }
+    pub fn shuffle_item_size(&self) -> Option<usize> {
+        match self {
+            Compression::Zlib(_) | Compression::Lz4(_) | Compression::Lz4HC(_) => None,
+            &Compression::ZlibByteShuffling(_, item_size) => Some(item_size),
+            &Compression::Lz4ByteShuffling(_, item_size) => Some(item_size),
+            &Compression::Lz4HCByteShuffling(_, item_size) => Some(item_size),
+        }
+    }
 }
 impl fmt::Display for Compression {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

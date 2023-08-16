@@ -67,7 +67,7 @@ impl WriteOptions {
         Self {
             creator_application: app_name.into(),
             export_fits_keywords: true,
-            checksum_alg: Some(ChecksumAlgorithm::Sha1), // * differs from reference implementation, where default is no checksum
+            checksum_alg: None,
             compression_alg: None,
             fp_lower_bound: 0.0,
             fp_upper_bound: 1.0,
@@ -105,7 +105,7 @@ impl XISF {
             .attach_printable("Failed to read 8-byte field \"file format signature\" at start of file")?;
         if signature_buf != CORRECT_SIGNATURE {
             return Err(report!(ReadFileError))
-                .attach_printable(format!("8-byte signature at start of file {signature_buf:?} did not match expected {CORRECT_SIGNATURE:?} (XISF0100)"));
+                .attach_printable(format!("Illegal file format signature: expected {CORRECT_SIGNATURE:?} (XISF0100), found {signature_buf:?}"));
         }
 
         // next 4 bytes are a little-endian encoded unsigned integer specifying the length of the XML header

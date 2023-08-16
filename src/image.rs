@@ -1,16 +1,20 @@
-use std::io::Read;
+use std::{io::{Read, Write}, fmt, str::FromStr};
 
 use byteorder::{ReadBytesExt, LE, BE};
+use digest::Digest;
 use error_stack::{IntoReport, Report, report, ResultExt};
 use libxml::{readonly::RoNode, xpath::Context as XpathContext};
 use ndarray::{ArrayD, IxDyn};
 use num_complex::Complex;
 use parse_int::parse as parse_auto_radix;
+use sha1::Sha1;
+use sha2::{Sha256, Sha512};
+use sha3::{Sha3_256, Sha3_512};
 use strum::{Display, EnumString, EnumVariantNames, VariantNames};
 use uuid::Uuid;
 use crate::{
-    data_block::{DataBlock, ByteOrder},
-    error::ReadDataBlockError,
+    data_block::{DataBlock, ByteOrder, Checksum},
+    error::{ReadDataBlockError, ParseValueError},
     ReadOptions,
     ParseNodeError,
 };
@@ -29,6 +33,7 @@ pub struct Image {
     pub pixel_storage: PixelStorage,
     pub color_space: ColorSpace,
     pub offset: f64,
+    pub orientation: Orientation,
     pub id: Option<String>,
     pub uuid: Option<Uuid>,
 }
@@ -125,6 +130,67 @@ impl Image {
             Default::default()
         };
 
+        let color_space = if let Some(val) = attrs.remove("colorSpace") {
+            val.parse::<ColorSpace>()
+                .into_report()
+                .change_context(CONTEXT)
+                .attach_printable_lazy(||
+                    format!("Invalid colorSpace attribute: expected one of {:?}, found {val}", ColorSpace::VARIANTS)
+                )?
+        } else {
+            Default::default()
+        };
+
+        let offset = if let Some(val) = attrs.remove("offset") {
+            let maybe_negative = val.parse::<f64>()
+                .into_report()
+                .change_context(CONTEXT)
+                .attach_printable("Invalid offset attribute")?;
+            if maybe_negative < 0.0 {
+                return Err(report!(CONTEXT)).attach_printable("Invalid offset attribute: must be zero or greater")
+            } else {
+                maybe_negative
+            }
+        } else {
+            0.0
+        };
+
+        let orientation = if let Some(val) = attrs.remove("orientation") {
+            val.parse::<Orientation>()
+                .change_context(CONTEXT)
+                .attach_printable("Invalid orientation attribute")?
+        } else {
+            Default::default()
+        };
+
+        let uid = attrs.remove("uid");
+        if let Some(uid) = &uid {
+            if !uid.chars().all(|c| c.is_alphanumeric()) {
+                return Err(report!(CONTEXT)).attach_printable(
+                    format!("Invalid uid attribute: expected all characters to be alphanumeric, found \"{uid}\"")
+                )
+            }
+            // TODO: verify uid uniqueness
+        }
+
+        let id = attrs.remove("id");
+        if let Some(id) = &id {
+            if !id.chars().all(|c| c.is_alphanumeric()) {
+                return Err(report!(CONTEXT)).attach_printable(
+                    format!("Invalid id attribute: expected all characters to be alphanumeric, found \"{id}\"")
+                )
+            }
+        }
+
+        let uuid = if let Some(val) = attrs.remove("uuid") {
+            Some(val.parse::<Uuid>()
+                .into_report()
+                .change_context(CONTEXT)
+                .attach_printable("Invalid uuid attribute")?)
+        } else {
+            None
+        };
+
         for remaining in attrs.into_iter() {
             tracing::warn!("Ignoring unrecognized attribute {}=\"{}\"", remaining.0, remaining.1);
         }
@@ -135,7 +201,7 @@ impl Image {
         }
 
         Ok(Image {
-            uid: None,
+            uid,
 
             data_block,
             geometry: geometry.into_iter().rev().collect(), // swap to row-major order
@@ -144,25 +210,14 @@ impl Image {
             bounds,
             image_type,
             pixel_storage,
-            // TODO: parse these attributes
-            color_space: Default::default(),
-            offset: 0.0,
-            id: None,
-            uuid: None,
+            color_space,
+            offset,
+            orientation,
+            id,
+            uuid,
         })
     }
 
-    // cull leading 1-size dimensions, useful for compatibility with FITS
-    // some FITS readers incorrectly use NAXIS=2 vs 3 as an indicator of a grayscale vs RGB image
-    pub fn geometry_trimmed(&self) -> &[usize] {
-        let mut trim = 0;
-        for i in &self.geometry {
-            if *i == 1 {
-                trim += 1;
-            }
-        }
-        &self.geometry[trim..]
-    }
     pub fn num_dimensions(&self) -> usize {
         self.geometry.len() - 1
     }
@@ -171,8 +226,47 @@ impl Image {
     }
 
     // TODO: convert CIE L*a*b images to RGB
+    // ! output array will not be stored contiguously in memory if the pixel storage mode is Normal
+    // ! if you need contiguous data, i.e. for interoperability, call `.as_standard_layout()` on the array before accessing the slice
+    // ! be warned that `.as_standard_layout()` clones the entire memory block if it isn't a no-op
     pub fn read_data(&self, root: &crate::XISF) -> Result<ImageData, Report<ReadDataBlockError>> {
-        let mut reader = self.data_block.location.bytes(&root)?;
+        fn verify_hash<D: Digest + Write>(expected: &[u8], reader: &mut dyn Read) -> Result<(), Report<ReadDataBlockError>> {
+            let mut hasher = D::new();
+            std::io::copy(reader, &mut hasher)
+                .into_report()
+                .change_context(ReadDataBlockError)
+                .attach_printable("Failed to calculate image hash")?;
+            let actual = hasher.finalize();
+            if actual.as_slice() == expected {
+                Ok(())
+            } else {
+                let actual = hex_simd::encode_to_string(actual.as_slice(), hex_simd::AsciiCase::Lower);
+                let expected = hex_simd::encode_to_string(expected, hex_simd::AsciiCase::Lower);
+                Err(report!(ReadDataBlockError))
+                    .attach_printable(format!("Data block failed checksum verification: expected {expected}, found {actual}"))
+            }
+        }
+
+        // read through the block twice, once to verify the checksum on the compressed bytes, and then again to read the decompressed bytes
+        let mut reader = self.data_block.location.raw_bytes(&root)?;
+        if let Some(checksum) = &self.data_block.checksum {
+            match checksum {
+                Checksum::Sha1(digest) => verify_hash::<Sha1>(digest, &mut reader)?,
+                Checksum::Sha256(digest) => verify_hash::<Sha256>(digest, &mut reader)?,
+                Checksum::Sha512(digest) => verify_hash::<Sha512>(digest, &mut reader)?,
+                Checksum::Sha3_256(digest) => verify_hash::<Sha3_256>(digest, &mut reader)?,
+                Checksum::Sha3_512(digest) => verify_hash::<Sha3_512>(digest, &mut reader)?,
+            }
+            reader = self.data_block.location.decompressed_bytes(&root, &self.data_block.compression)?;
+        }
+
+        match &self.data_block.compression {
+            // TODO byte shuffling: I think I can use multi_slice_mut for this?
+            Some(any) if any.is_shuffled() => return Err(report!(ReadDataBlockError))
+                .attach_printable("Byte shuffling is not yet supported"),
+            _ => (),
+        }
+
         match self.sample_format {
             SampleFormat::UInt8 => Ok(ImageData::UInt8(
                 self.read_data_impl(&mut reader,
@@ -210,13 +304,12 @@ impl Image {
                     Box::<dyn Read>::read_f64_into::<BE>
                 )?
             )),
+            // TODO read complex images
             SampleFormat::Complex32 => {
-                // TODO read complex images
                 Err(report!(ReadDataBlockError))
                     .attach_printable("Reading complex-valued images is not yet supported")
             }
             SampleFormat::Complex64 => {
-                // TODO read complex images
                 Err(report!(ReadDataBlockError))
                     .attach_printable("Reading complex-valued images is not yet supported")
             }
@@ -226,6 +319,7 @@ impl Image {
     // TODO: extract out some of this to DataBlock for re-use with vector and matrix blocks
     // TODO: do I actually need to zero out that memory? `ArrayBase::uninit()` looks like a tempting way to save cycles
     // TODO: handle out of memory errors gracefully instead of panicking, which I assume is the default behavior
+    // TODO: read normal pixel storage and byte-shuffled compression without duplicating the whole image
     // F1 and F2 have identical signatures, but they need to be separate
     // because two functions with the same signature are not technically the same type according to rust
     fn read_data_impl<T, F1, F2>(&self, reader: &mut Box<dyn Read>, read_le: F1, read_be: F2) -> Result<ArrayD<T>, Report<ReadDataBlockError>>
@@ -256,18 +350,17 @@ impl Image {
                     ByteOrder::Little => read_le(reader, buf_slice),
                 }.into_report().change_context(ReadDataBlockError)?;
                 // move the channel axis to the beginning instead of the end
+                // ! this is not reflected in the memory layout of the array
                 let mut axes: Vec<_> = (0..self.geometry.len()).into_iter().collect();
                 axes.rotate_right(1);
                 buf = buf.permuted_axes(axes.as_slice());
-                // and apply the transformation to the memory layout
-                buf = buf.as_standard_layout().to_owned();
             }
         }
         Ok(buf)
     }
 }
 
-#[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames)]
+#[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum SampleFormat {
     UInt8,
     UInt16,
@@ -287,7 +380,7 @@ impl SampleFormat {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SampleBounds {
     pub low: f64,
     pub high: f64,
@@ -305,7 +398,7 @@ pub enum ImageData {
     Complex64(ArrayD<Complex<f64>>),
 }
 
-#[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames)]
+#[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum ImageType {
     Bias,
     Dark,
@@ -324,17 +417,78 @@ pub enum ImageType {
     WeightMap,
 }
 
-#[derive(Clone, Copy, Debug, Display, Default, EnumString, EnumVariantNames)]
+#[derive(Clone, Copy, Debug, Display, Default, EnumString, EnumVariantNames, PartialEq)]
 pub enum PixelStorage {
     #[default]
     Planar, // channels are contiguous in memory
     Normal, // pixels are contiguous in memory
 }
 
-#[derive(Clone, Copy, Debug, Display, Default, EnumString, EnumVariantNames)]
+#[derive(Clone, Copy, Debug, Display, Default, EnumString, EnumVariantNames, PartialEq)]
 pub enum ColorSpace {
     #[default]
     Gray,
     RGB,
     CIELab,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Orientation {
+    pub rotation: Rotation,
+    pub hflip: bool,
+}
+impl fmt::Display for Orientation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // if there is a horizontal flip but no rotation, it's serialized just as "flip", not "0;flip"
+        if self.hflip && self.rotation == Rotation::None {
+            f.write_str("flip")
+        }
+        else {
+            f.write_fmt(format_args!("{}{}",
+                self.rotation,
+                if self.hflip { ";flip" } else { "" }
+            ))
+        }
+    }
+}
+impl FromStr for Orientation {
+    type Err = Report<ParseValueError>;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "0" => Ok(Self { rotation: Rotation::None, hflip: false }),
+            "flip" => Ok(Self { rotation: Rotation::None, hflip: true }),
+            "90" => Ok(Self { rotation: Rotation::None, hflip: false }),
+            "90;flip" => Ok(Self { rotation: Rotation::None, hflip: true }),
+            "-90" => Ok(Self { rotation: Rotation::None, hflip: false }),
+            "-90;flip" => Ok(Self { rotation: Rotation::None, hflip: true }),
+            "180" => Ok(Self { rotation: Rotation::None, hflip: false }),
+            "180;flip" => Ok(Self { rotation: Rotation::None, hflip: true }),
+            bad => Err(report!(ParseValueError("Orientation")))
+                .attach_printable(format!("Expected one of [0, flip, 90, 90;flip, -90, -90;flip, 180, 180;flip], found {bad}",))
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Rotation {
+    #[default]
+    None,
+    Cw90,
+    Ccw90,
+    _180,
+}
+impl Rotation {
+    pub fn degrees(&self) -> i16 {
+        match self {
+            Rotation::None => 0,
+            Rotation::Cw90 => -90,
+            Rotation::Ccw90 => 90,
+            Rotation::_180 => 180,
+        }
+    }
+}
+impl fmt::Display for Rotation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!("{}", self.degrees()))
+    }
 }

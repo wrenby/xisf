@@ -1,10 +1,13 @@
 [package]
 name = "xisf"
-description = "A standalone encoder/decoder for Pleiades Astrophoto's XISF image format"
+description = "Decoder (eventually encoder) for the XISF astronomy image file format"
+categories = ["encoding", "parser-implementations", "multimedia::images", "science"]
+keywords = ["astronomy"]
 readme = "README.md"
 license = "LICENSE.md"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.64.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -25,6 +28,12 @@ uuid = { version = "1.4.1", features = ["v4"] }
 hex-simd = { version = "0.8.0", features = ["alloc"] }
 base64-simd = "0.8.0"
 num-traits = "0.2.16"
+lz4 = "1.24.0"
+flate2 = "1.0.27"
+sha1 = "0.10.5"
+sha2 = "0.10.7"
+sha3 = "0.10.8"
+digest = "0.10.7"
 
 
 [dev-dependencies]
