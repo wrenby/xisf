@@ -1,6 +1,6 @@
 # xisf-rs
 
-An unaffiliated implementation of Pleiades Astrophoto's open-source Extensible Image Serialization Format (XISF) file format, the native image format for their flagship editing software PixInsight. Aims for 100% support for [spec version 1.0](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html), as opposed to implementations such as [libXISF](https://gitea.nouspiro.space/nou/libXISF) or Pleiades Astrophoto's own [PixInsight Class Libraries](https://gitlab.com/pixinsight/PCL), which are written with 2D images in mind. Currently under rapid development, no guarantee of API stability.
+An unaffiliated implementation of Pleiades Astrophoto's open-source Extensible Image Serialization Format (XISF) file format, the native image format for their flagship editing software PixInsight. Aims for 100% support for [spec version 1.0](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html), as opposed to implementations such as [libXISF](https://gitea.nouspiro.space/nou/libXISF) or Pleiades Astrophoto's own [PixInsight Class Libraries](https://gitlab.com/pixinsight/PCL), which are written with 2D images in mind. Currently under rapid development, and the API is changing rapidly, but all changes to the public API will be accompanied with a version update following [Cargo's SemVer guidelines](https://doc.rust-lang.org/cargo/reference/semver.html) before being pushed to [crates.io](https://crates.io/crates/xisf-rs).
 
 ## Feature Comparison
 
@@ -10,20 +10,19 @@ Language | Rust | C++ | C++
 License | MIT | GPLv3 | Custom
 Monolithic Files | Decode | Encode + Decode | Encode + Decode
 Distributed Files | :x: | :x: | :x:
-Root Element Child Types | Image (N-D) | Image ([2D only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816)), Metadata<sup>1</sup> | Image ([2D only](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001))<sup>2</sup>, Metadata
+N-D Images | :white_check_mark: | [:x:](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816) | [:x:](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001)
 Pixel Sample Formats | Scalar | Agnostic (Raw Bytes Only) | Scalar ([except 64-bit integers](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L599)), Complex
-Image Metadata Nodes | :x: | FITS Keywords, XISF Properties<sup>3</sup>, Thumbnail, CFA, ICC Profile | :white_check_mark:<sup>4</sup>
-Data Block Compression | `zlib`, `lz4`, `lz4hc`<sup>5</sup> | `zlib`, `lz4`, `lz4hc`, `zstd`<sup>5, 6</sup> | `zlib`, `lz4`, `lz4hc`
+Image Metadata | Attributes only | FITS Keywords, XISF Properties, Thumbnail, CFA, ICC Profile | [Missing imageType, offset, orientation, and uuid attributes](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L815)
+Supported XISF Property Locations | :x: | `<Image>`<sup>1, 2</sup> | `<Image>`, `<Metadata>`<sup>1</sup>
+Data Block Compression | `zlib`, `lz4`, `lz4hc`<sup>3</sup> | `zlib`, `lz4`, `lz4hc`, `zstd`<sup>3, 4</sup> | `zlib`, `lz4`, `lz4hc`
 Checksum Verification | :white_check_mark: | :x: | :white_check_mark:
-Reference Element | :x: | :x: | :x:
+`<Reference>` Element | :x: | :x: | :x:
 XML Digital Signature Verification | :x: | :x: | :x:
 
-1. [Image is missing offset, orientation, id, and uuid attributes](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L815); Metadata is encoder-only, and [only supports XISF:CreationTime and XISF:CreatorApplication](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L1071) property keys
-2. Missing imageType, offset, orientation, and uuid attributes
-3. [Int32, Float32, Float64, String, and TimePoint only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/variant.cpp#L379), and only on Image elements
-4. Does not support `<Table>` properties
-5. Sub-blocks not yet supported
-6. `zstd` support is nonstandard
+1. Does not support `<Table>` properties
+2. [Int32, Float32, Float64, String, and TimePoint only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/variant.cpp#L379)
+3. Sub-blocks not yet supported
+4. `zstd` support is nonstandard
 
 ## Dependencies
 - Minimum Supported Rust Version (MSRV): 1.64.0, verified for `x86_64-unknown-linux-gnu`

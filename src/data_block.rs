@@ -1,13 +1,11 @@
 use std::{
-    cell::RefCell,
     collections::HashMap,
-    io::{Read, BufReader, Seek, Cursor, Take},
+    io::{Read, BufReader, Seek, Cursor},
     fmt,
     fs::File,
     num::NonZeroU8,
     path::PathBuf,
-    str::FromStr,
-    sync::Arc,
+    str::FromStr, rc::Rc,
 };
 
 use error_stack::{Report, IntoReport, ResultExt, report};
@@ -90,7 +88,7 @@ impl DataBlock {
 pub enum DataBlockReference {
     Plaintext {
         // inline or embedded: data is encoded in a child text or <Data> node
-        encoding: Encoding,
+        encoding: TextEncoding,
         text: String, // stripped of all whitespace
     },
     Attachment {
@@ -122,7 +120,7 @@ impl DataBlockReference {
         if let Some(attr) = attrs.remove("location") {
             match attr.split(":").collect::<Vec<_>>().as_slice() {
                 &["inline", encoding] => {
-                    let encoding = encoding.parse::<Encoding>()
+                    let encoding = encoding.parse::<TextEncoding>()
                         .into_report()
                         .change_context(context)
                         .attach_printable("Invalid location attribute: failed to parse inline encoding")?;
@@ -152,7 +150,7 @@ impl DataBlockReference {
                         [] => Err(report!(context)).attach_printable("Missing embedded <Data> node: required for embedded data block location"),
                         [one] => {
                             if let Some(encoding) = one.get_attribute("encoding") {
-                                let encoding = encoding.parse::<Encoding>()
+                                let encoding = encoding.parse::<TextEncoding>()
                                     .into_report()
                                     .change_context(context)
                                     .attach_printable("Invalid encoding attribute in embedded <Data> node")?;
@@ -252,10 +250,10 @@ impl DataBlockReference {
         match self {
             Self::Plaintext { encoding, text } => {
                 let buf = match encoding {
-                    Encoding::Hex => hex_simd::decode_to_vec(text)
+                    TextEncoding::Hex => hex_simd::decode_to_vec(text)
                         .into_report()
                         .change_context(ReadDataBlockError)?,
-                    Encoding::Base64 => base64.decode_to_vec(text)
+                    TextEncoding::Base64 => base64.decode_to_vec(text)
                         .into_report()
                         .change_context(ReadDataBlockError)?,
                 };
@@ -312,49 +310,97 @@ impl DataBlockReference {
     }
 }
 
-/// Allows a reader to be split at arbitrary byte offsets, used for streaming sub-block decompression
-/// Intended usage: `reader.multi_take(...).map(|| ...).collect()`
-/// But that doesn't work, because correct functioning relies on read_until_empty() after each successive next()
-/// * TODO: new idea -- create a `map()` function on `MultiTake<T>`,
-/// * and have the result of *that* implement `Read` in a similar fashion to [`std::io::Chain`](https://doc.rust-lang.org/std/io/struct.Chain.html#impl-Read-for-Chain%3CT,+U%3E)
-/// * or I don't even really need the middle step, I guess, could just make it a `ReadMapSubBlocksExt`
-trait ReadMultiTakeExt {
+/// Allows a reader to be split at arbitrary byte offsets, kind of like a combination of `std::io::Take` and `std::io::Chain`
+/// Used for streaming sub-block decompression
+trait ReadSubBlocksExt {
     type Inner;
-    fn multi_take(self, sizes: &[u64]) -> MultiTake<Self::Inner>;
+    fn subblocks(self, sizes: &[usize]) -> ReadSubBlocks<Self::Inner>;
 }
-impl<R: Read> ReadMultiTakeExt for R {
+impl<R: Read> ReadSubBlocksExt for R {
     type Inner = R;
-    fn multi_take(self, sizes: &[u64]) -> MultiTake<R> {
-        MultiTake::new(self, sizes)
+    fn subblocks(self, sizes: &[usize]) -> ReadSubBlocks<Self::Inner> {
+        ReadSubBlocks::new(self, sizes)
     }
 }
-struct MultiTake<T> {
-    inner: Arc<RefCell<Take<T>>>,
-    sizes: Vec<u64>,
+struct ReadSubBlocks<T> {
+    inner: Rc<T>,
+    limits: Vec<usize>,
     chunk_index: usize,
 }
-impl<R: Read> MultiTake<R> {
+impl<R: Read> ReadSubBlocks<R> {
     /// Panics if `sizes` is empty
-    fn new(from: R, sizes: &[u64]) -> MultiTake<R> {
+    pub fn new(from: R, sizes: &[usize]) -> Self {
         Self {
-            inner: Arc::new(RefCell::new(from.take(sizes[0]))),
-            sizes: sizes.to_vec(),
+            inner: Rc::new(from),
+            limits: sizes.to_vec(),
             chunk_index: 0,
         }
     }
-}
-impl<R: Read> Iterator for MultiTake<R> {
-    type Item = Arc<RefCell<Take<R>>>;
 
-    fn next(&mut self) -> Option<Self::Item> {
-        self.inner.borrow_mut().set_limit(self.sizes[self.chunk_index]);
-        self.chunk_index += 1;
-        Some(self.inner.clone())
+    pub fn map<F>(&mut self, f: F) -> MapSubBlocks<F, R>
+        where F: Fn(Rc<R>) -> Box<dyn Read> {
+        MapSubBlocks::new(self, f)
+    }
+
+    /// Number of bytes left to read before the current block ends
+    pub fn current_limit(&self) -> usize {
+        self.limits[self.chunk_index]
+    }
+
+    /// Necessary to call after a successful read to avoid corruption
+    pub fn reduce_limit(&mut self, bytes_read: usize) {
+        self.limits[self.chunk_index] -= bytes_read;
+    }
+}
+struct MapSubBlocks<'a, F, R> {
+    sub_blocks: &'a mut ReadSubBlocks<R>,
+    map_func: Box<F>,
+    current: Box<dyn Read>,
+}
+impl<'a, F, R> Read for MapSubBlocks<'a, F, R>
+    where F: Fn(Rc<R>) -> Box<dyn Read>, R: Read {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut total_bytes_read = 0;
+        let size = self.sub_blocks.current_limit();
+        let mut last_bytes_read = self.current.read(&mut buf[..size])?;
+        while total_bytes_read != buf.len() {
+            total_bytes_read += last_bytes_read;
+            self.sub_blocks.reduce_limit(last_bytes_read);
+            if last_bytes_read == 0 {
+                if let Some(size) = self.next_block() {
+                    last_bytes_read = self.current.read(&mut buf[total_bytes_read..size])?;
+                } else {
+                    break;
+                }
+            }
+        }
+        Ok(total_bytes_read)
+    }
+}
+impl<'a, F, R> MapSubBlocks<'a, F, R>
+where F: Fn(Rc<R>) -> Box<dyn Read>, R: Read {
+    pub fn new(sub_blocks: &'a mut ReadSubBlocks<R>, f: F) -> Self {
+        let current = f(sub_blocks.inner.clone());
+        Self {
+            sub_blocks,
+            map_func: Box::new(f),
+            current,
+        }
+    }
+    /// Returns `None` if there are no blocks left
+    pub fn next_block(&mut self) -> Option<usize> {
+        self.sub_blocks.chunk_index += 1;
+        if self.sub_blocks.chunk_index < self.sub_blocks.limits.len() {
+            self.current = (*self.map_func)(self.sub_blocks.inner.clone());
+            Some(self.sub_blocks.limits[self.sub_blocks.chunk_index])
+        } else {
+            None
+        }
     }
 }
 
 #[derive(Clone, Copy, Debug, Default, Display, EnumString, EnumVariantNames, PartialEq)]
-pub enum Encoding {
+pub enum TextEncoding {
     #[default]
     #[strum(serialize = "base64")]
     Base64,
@@ -467,6 +513,9 @@ impl Checksum {
     }
 }
 
+// TODO: refactor this: I want to strip apart the algorithm from the byte shuffling
+// TODO: use Compression only for parsing purposes, remove from public API and replace the field in Image with something more useful
+// - i.e. why do I store uncompressed_size when I have a perfectly usable sub_blocks feature that does the same thing?
 #[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum CompressionAlgorithm {
     #[strum(serialize = "zlib")]
