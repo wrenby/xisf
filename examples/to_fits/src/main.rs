@@ -4,7 +4,7 @@ use ndarray::ArrayD;
 use tracing::Level;
 use tracing_error::ErrorLayer;
 use tracing_subscriber::{prelude::*, FmtSubscriber};
-use xisf::image::ImageData;
+use xisf_rs::image::ImageData;
 use std::{env, any::TypeId, fmt::Debug};
 
 fn main() {
@@ -45,7 +45,7 @@ fn main() {
         }
     }
 
-    let xisf = xisf::XISF::read_file("test-files/BiasStacked/test.xisf", &Default::default()).expect("parse header");
+    let xisf = xisf_rs::XISF::read_file("test-files/BiasStacked/test.xisf", &Default::default()).expect("parse header");
     println!("{xisf:#?}");
 
     // passing the file as a &mut Option because we want to do something different the first time this is run

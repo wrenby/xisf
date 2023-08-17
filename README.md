@@ -13,7 +13,7 @@ Distributed Files | :x: | :x: | :x:
 Root Element Child Types | Image (N-D) | Image ([2D only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816)), Metadata<sup>1</sup> | Image ([2D only](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001))<sup>2</sup>, Metadata
 Pixel Sample Formats | Scalar | Agnostic (Raw Bytes Only) | Scalar ([except 64-bit integers](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L599)), Complex
 Image Metadata Nodes | :x: | FITS Keywords, XISF Properties<sup>3</sup>, Thumbnail, CFA, ICC Profile | :white_check_mark:<sup>4</sup>
-Data Block Compression | `zlib`, `lz4`, `lz4hc`<sup>5</sup> | `zlib`, `lz4`, `lz4hc`, `zstd`<sup>6</sup> | `zlib`, `lz4`, `lz4hc`
+Data Block Compression | `zlib`, `lz4`, `lz4hc`<sup>5</sup> | `zlib`, `lz4`, `lz4hc`, `zstd`<sup>5, 6</sup> | `zlib`, `lz4`, `lz4hc`
 Checksum Verification | :white_check_mark: | :x: | :white_check_mark:
 Reference Element | :x: | :x: | :x:
 XML Digital Signature Verification | :x: | :x: | :x:
@@ -23,7 +23,7 @@ XML Digital Signature Verification | :x: | :x: | :x:
 3. [Int32, Float32, Float64, String, and TimePoint only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/variant.cpp#L379), and only on Image elements
 4. Does not support `<Table>` properties
 5. Sub-blocks not yet supported
-6. Sub-blocks not yet supported; `zstd` support is nonstandard
+6. `zstd` support is nonstandard
 
 ## Dependencies
 - Minimum Supported Rust Version (MSRV): 1.64.0, verified for `x86_64-unknown-linux-gnu`
@@ -38,6 +38,7 @@ XML Digital Signature Verification | :x: | :x: | :x:
     - Consider not enforcing a read into `Planar`-organized memory: how to associate an image geometry with the array if its shape is no longer an indicator?
 - [x] Data block compression
   - Not quite at baseline support: doesn't respect the `subblocks` attribute, meaning this implementation is limited to 4GiB files
+  - Is something like a `MultiTake` or `VariableChunksIter` wrapper possible? YES: see `Take<T>::set_limit` ([proof of concept](https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=b6a55f09c803a8f3d48291b429455e46))
 - [x] Checksum verification
 - [ ] Make a decent public API instead of leaving everything `pub`
   - `ReadOptions` and `WriteOptions` should probably have Builders to avoid breaking changes if I add something new
@@ -55,7 +56,7 @@ XML Digital Signature Verification | :x: | :x: | :x:
 - [ ] Image thumbnails: turn `read_data` into a trait
 - [ ] Documentation and tests
 - [ ] `fitsio` interoperability feature
-- [ ] `<Reference>` element
+- [ ] `<Reference>` element: `impl MaybeReference for RoNode`
 - [ ] CIE L\*a\*b color space conversion -- is this out of scope?
 - [ ] 128-bit floating point `<Property>` types ([`rustc_apfloat::ieee::Quad`](https://doc.rust-lang.org/stable/nightly-rustc/rustc_apfloat/ieee/type.Quad.html)?)
   - Supports binary de/serialization with [`from_bits`](https://doc.rust-lang.org/stable/nightly-rustc/rustc_apfloat/trait.Float.html#tymethod.from_bits) and [`to_bits`](https://doc.rust-lang.org/stable/nightly-rustc/rustc_apfloat/trait.Float.html#tymethod.to_bits), with the middle step of reading to `u128` first

@@ -7,7 +7,7 @@ edition = "2021"
 name = "to_fits"
 
 [dependencies]
-xisf = { path = "../../" }
+xisf-rs = { path = "../../" }
 error-stack = { workspace = true }
 tracing = { workspace = true }
 ndarray = { workspace = true }

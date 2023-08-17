@@ -1,11 +1,13 @@
 use std::{
+    cell::RefCell,
     collections::HashMap,
-    io::{Read, BufReader, Seek, Cursor},
+    io::{Read, BufReader, Seek, Cursor, Take},
     fmt,
     fs::File,
     num::NonZeroU8,
     path::PathBuf,
     str::FromStr,
+    sync::Arc,
 };
 
 use error_stack::{Report, IntoReport, ResultExt, report};
@@ -280,7 +282,7 @@ impl DataBlockReference {
     }
 
     // ! if byte shuffling was enabled, this byte stream will still be shuffled
-    // - no way around this without duplication, which is unacceptable for an image format storing arbitrarily large raw images
+    // - the concept for the data block read functions is a stream, and byte shuffling requires the whole file to be in memory
     pub(crate) fn decompressed_bytes(&self, xisf: &crate::XISF, compression: &Option<Compression>) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
         let raw = self.raw_bytes(xisf)?;
         if let Some(compression) = compression {
@@ -307,6 +309,47 @@ impl DataBlockReference {
             Self::Url { url, .. } if url.scheme() != "file" => true,
             _ => false,
         }
+    }
+}
+
+/// Allows a reader to be split at arbitrary byte offsets, used for streaming sub-block decompression
+/// Intended usage: `reader.multi_take(...).map(|| ...).collect()`
+/// But that doesn't work, because correct functioning relies on read_until_empty() after each successive next()
+/// * TODO: new idea -- create a `map()` function on `MultiTake<T>`,
+/// * and have the result of *that* implement `Read` in a similar fashion to [`std::io::Chain`](https://doc.rust-lang.org/std/io/struct.Chain.html#impl-Read-for-Chain%3CT,+U%3E)
+/// * or I don't even really need the middle step, I guess, could just make it a `ReadMapSubBlocksExt`
+trait ReadMultiTakeExt {
+    type Inner;
+    fn multi_take(self, sizes: &[u64]) -> MultiTake<Self::Inner>;
+}
+impl<R: Read> ReadMultiTakeExt for R {
+    type Inner = R;
+    fn multi_take(self, sizes: &[u64]) -> MultiTake<R> {
+        MultiTake::new(self, sizes)
+    }
+}
+struct MultiTake<T> {
+    inner: Arc<RefCell<Take<T>>>,
+    sizes: Vec<u64>,
+    chunk_index: usize,
+}
+impl<R: Read> MultiTake<R> {
+    /// Panics if `sizes` is empty
+    fn new(from: R, sizes: &[u64]) -> MultiTake<R> {
+        Self {
+            inner: Arc::new(RefCell::new(from.take(sizes[0]))),
+            sizes: sizes.to_vec(),
+            chunk_index: 0,
+        }
+    }
+}
+impl<R: Read> Iterator for MultiTake<R> {
+    type Item = Arc<RefCell<Take<R>>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.borrow_mut().set_limit(self.sizes[self.chunk_index]);
+        self.chunk_index += 1;
+        Some(self.inner.clone())
     }
 }
 
