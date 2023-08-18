@@ -1,11 +1,13 @@
 use std::{
+    cell::RefCell,
     collections::HashMap,
-    io::{Read, BufReader, Seek, Cursor},
+    io::{self, Read, BufReader, Seek, Cursor},
     fmt,
     fs::File,
-    num::NonZeroU8,
+    num::{NonZeroU8, NonZeroUsize},
     path::PathBuf,
-    str::FromStr, rc::Rc,
+    rc::Rc,
+    str::FromStr,
 };
 
 use error_stack::{Report, IntoReport, ResultExt, report};
@@ -23,7 +25,6 @@ pub struct DataBlock {
     pub byte_order: ByteOrder,
     pub checksum: Option<Checksum>,
     pub compression: Option<Compression>,
-    pub sub_blocks: SubBlocks, // wrapper for Vec<(usize, usize)>, empty vec indicates compression is not using sub-blocks
 }
 impl DataBlock {
     // returns Ok(Some(_)) if a data block was successfully parsed
@@ -32,7 +33,6 @@ impl DataBlock {
     // passing &mut attrs isn't for the benefit of this function, but the caller function
     // (helps cut down on unnecessary "ignoring unrecognized attribute" warnings)
     pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext, context: ParseNodeError, attrs: &mut HashMap<String, String>) -> Result<Option<Self>, Report<ParseNodeError>> {
-        // TODO: move the code to grab the data from inline and embedded over to here, and remove DataBlockLocation::parse_node in favor of a more standard FromStr implementation
         if let Some(location) = DataBlockReference::parse_node(node, xpath, context, attrs)? {
             let byte_order = match attrs.remove("byteOrder") {
                 Some(byte_order) => {
@@ -53,9 +53,9 @@ impl DataBlock {
                 None => None,
             };
 
-            let compression = match attrs.remove("compression") {
+            let compression_attr = match attrs.remove("compression") {
                 Some(compression) => Some(
-                    compression.parse::<Compression>()
+                    compression.parse::<CompressionAttr>()
                         .change_context(context)
                         .attach_printable("Invalid compression attribute")?
                 ),
@@ -70,13 +70,42 @@ impl DataBlock {
                 },
                 None => SubBlocks(vec![]),
             };
+            let compression = {
+                match (compression_attr, sub_blocks.0.len()) {
+                    (Some(attr), 0) => {
+                        Some(Compression {
+                            algorithm: attr.algorithm(),
+                            sub_blocks: SubBlocks(vec![
+                                (usize::MAX, attr.uncompressed_size()) // TODO: usize::MAX here is safe, but it's a bit of a hack. marking just to verify it stays safe as I implement new features
+                            ]),
+                            byte_shuffling: attr.shuffle_item_size()
+                        })
+                    },
+                    (Some(attr), _) => {
+                        let uncompressed_size: usize = sub_blocks.0.iter().map(|(_, un)| un).sum();
+                        if uncompressed_size != attr.uncompressed_size() {
+                            return Err(report!(context))
+                                .attach_printable("Compression sub-blocks must sum to the uncompressed size specified in the compression attribute")
+                        }
+                        Some(Compression {
+                            algorithm: attr.algorithm(),
+                            sub_blocks,
+                            byte_shuffling: attr.shuffle_item_size()
+                        })
+                    },
+                    (None, 0) => None,
+                    (None, _) => {
+                        tracing::warn!("Ignoring subblocks attribute because no compression was specified");
+                        None
+                    }
+                }
+            };
 
             Ok(Some(DataBlock {
                 location,
                 byte_order,
                 checksum,
                 compression,
-                sub_blocks,
             }))
         } else {
             Ok(None)
@@ -263,7 +292,7 @@ impl DataBlockReference {
                 let mut file = File::open(&xisf.filename)
                     .into_report()
                     .change_context(ReadDataBlockError)?;
-                file.seek(std::io::SeekFrom::Start(*position))
+                file.seek(io::SeekFrom::Start(*position))
                     .into_report()
                     .change_context(ReadDataBlockError)?;
                 Ok(Box::new(BufReader::new(file).take(*size)))
@@ -284,16 +313,27 @@ impl DataBlockReference {
     pub(crate) fn decompressed_bytes(&self, xisf: &crate::XISF, compression: &Option<Compression>) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
         let raw = self.raw_bytes(xisf)?;
         if let Some(compression) = compression {
-            match compression {
-                Compression::Zlib(..) | Compression::ZlibByteShuffling(..) => {
-                    Ok(Box::new(ZlibDecoder::new(raw)))
-                },
-                Compression::Lz4(..) | Compression::Lz4ByteShuffling(..) | Compression::Lz4HC(..) | Compression::Lz4HCByteShuffling(..) => {
+            let uncompressed_sizes: Vec<_> = compression.sub_blocks.0.iter().map(|tup| tup.0).collect();
+            match compression.algorithm {
+                CompressionAlgorithm::Zlib => {
                     Ok(Box::new(
-                        lz4::Decoder::new(raw)
-                            .into_report()
+                        raw.sub_blocks(&uncompressed_sizes[..])
+                            .map(|shared| {
+                                Ok(Box::new(ZlibDecoder::new(shared)))
+                            }).unwrap() // safe because the map function always succeeds, and that's the only point of failure
+                    ))
+                },
+                CompressionAlgorithm::Lz4 | CompressionAlgorithm::Lz4HC => {
+                    Ok(Box::new(
+                        raw.sub_blocks(&uncompressed_sizes[..])
+                            .map(|shared| {
+                                Ok(Box::new(
+                                    lz4::Decoder::new(shared)
+                                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+                                ))
+                            }).into_report()
                             .change_context(ReadDataBlockError)
-                            .attach_printable("Failed to open Lz4 stream")?
+                            .attach_printable("Failed to initialize Lz4 decoder")?
                     ))
                 }
             }
@@ -310,20 +350,20 @@ impl DataBlockReference {
     }
 }
 
-/// Allows a reader to be split at arbitrary byte offsets, kind of like a combination of `std::io::Take` and `std::io::Chain`
+/// Allows a reader to be split at arbitrary byte offsets, kind of like a combination of `io::Take` and `io::Chain`
 /// Used for streaming sub-block decompression
 trait ReadSubBlocksExt {
     type Inner;
-    fn subblocks(self, sizes: &[usize]) -> ReadSubBlocks<Self::Inner>;
+    fn sub_blocks(self, sizes: &[usize]) -> ReadSubBlocks<Self::Inner>;
 }
 impl<R: Read> ReadSubBlocksExt for R {
     type Inner = R;
-    fn subblocks(self, sizes: &[usize]) -> ReadSubBlocks<Self::Inner> {
+    fn sub_blocks(self, sizes: &[usize]) -> ReadSubBlocks<Self::Inner> {
         ReadSubBlocks::new(self, sizes)
     }
 }
 struct ReadSubBlocks<T> {
-    inner: Rc<T>,
+    inner: SharedReader<T>,
     limits: Vec<usize>,
     chunk_index: usize,
 }
@@ -331,14 +371,15 @@ impl<R: Read> ReadSubBlocks<R> {
     /// Panics if `sizes` is empty
     pub fn new(from: R, sizes: &[usize]) -> Self {
         Self {
-            inner: Rc::new(from),
+            inner: SharedReader::new(from),
             limits: sizes.to_vec(),
             chunk_index: 0,
         }
     }
 
-    pub fn map<F>(&mut self, f: F) -> MapSubBlocks<F, R>
-        where F: Fn(Rc<R>) -> Box<dyn Read> {
+    /// Initializes the
+    pub fn map<F>(self, f: F) -> io::Result<MapSubBlocks<F, R>>
+        where F: Fn(SharedReader<R>) -> io::Result<Box<dyn Read>> {
         MapSubBlocks::new(self, f)
     }
 
@@ -352,14 +393,32 @@ impl<R: Read> ReadSubBlocks<R> {
         self.limits[self.chunk_index] -= bytes_read;
     }
 }
-struct MapSubBlocks<'a, F, R> {
-    sub_blocks: &'a mut ReadSubBlocks<R>,
+struct SharedReader<T>(Rc<RefCell<T>>);
+impl<T> Clone for SharedReader<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl<T> SharedReader<T> {
+    pub fn new(inner: T) -> Self {
+        Self(Rc::new(RefCell::new(inner)))
+    }
+}
+impl<R: Read> Read for SharedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut lock = self.0.try_borrow_mut()
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        lock.read(buf)
+    }
+}
+struct MapSubBlocks<F, R> {
+    sub_blocks: ReadSubBlocks<R>,
     map_func: Box<F>,
     current: Box<dyn Read>,
 }
-impl<'a, F, R> Read for MapSubBlocks<'a, F, R>
-    where F: Fn(Rc<R>) -> Box<dyn Read>, R: Read {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+impl<F, R> Read for MapSubBlocks<F, R>
+    where F: Fn(SharedReader<R>) -> io::Result<Box<dyn Read>>, R: Read {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut total_bytes_read = 0;
         let size = self.sub_blocks.current_limit();
         let mut last_bytes_read = self.current.read(&mut buf[..size])?;
@@ -367,7 +426,7 @@ impl<'a, F, R> Read for MapSubBlocks<'a, F, R>
             total_bytes_read += last_bytes_read;
             self.sub_blocks.reduce_limit(last_bytes_read);
             if last_bytes_read == 0 {
-                if let Some(size) = self.next_block() {
+                if let Some(size) = self.next_block()? {
                     last_bytes_read = self.current.read(&mut buf[total_bytes_read..size])?;
                 } else {
                     break;
@@ -377,24 +436,24 @@ impl<'a, F, R> Read for MapSubBlocks<'a, F, R>
         Ok(total_bytes_read)
     }
 }
-impl<'a, F, R> MapSubBlocks<'a, F, R>
-where F: Fn(Rc<R>) -> Box<dyn Read>, R: Read {
-    pub fn new(sub_blocks: &'a mut ReadSubBlocks<R>, f: F) -> Self {
-        let current = f(sub_blocks.inner.clone());
-        Self {
+impl<F, R> MapSubBlocks<F, R>
+where F: Fn(SharedReader<R>) -> io::Result<Box<dyn Read>>, R: Read {
+    pub fn new(sub_blocks: ReadSubBlocks<R>, f: F) -> io::Result<Self> {
+        let current = f(sub_blocks.inner.clone())?;
+        Ok(Self {
             sub_blocks,
             map_func: Box::new(f),
             current,
-        }
+        })
     }
     /// Returns `None` if there are no blocks left
-    pub fn next_block(&mut self) -> Option<usize> {
+    pub fn next_block(&mut self) -> io::Result<Option<usize>> {
         self.sub_blocks.chunk_index += 1;
         if self.sub_blocks.chunk_index < self.sub_blocks.limits.len() {
-            self.current = (*self.map_func)(self.sub_blocks.inner.clone());
-            Some(self.sub_blocks.limits[self.sub_blocks.chunk_index])
+            self.current = (*self.map_func)(self.sub_blocks.inner.clone())?;
+            Ok(Some(self.sub_blocks.limits[self.sub_blocks.chunk_index]))
         } else {
-            None
+            Ok(None)
         }
     }
 }
@@ -513,70 +572,70 @@ impl Checksum {
     }
 }
 
-// TODO: refactor this: I want to strip apart the algorithm from the byte shuffling
-// TODO: use Compression only for parsing purposes, remove from public API and replace the field in Image with something more useful
-// - i.e. why do I store uncompressed_size when I have a perfectly usable sub_blocks feature that does the same thing?
-#[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
-pub enum CompressionAlgorithm {
-    #[strum(serialize = "zlib")]
-    Zlib,
-    #[strum(serialize = "zlib+sh")]
-    ZlibByteShuffling,
-    #[strum(serialize = "lz4")]
-    Lz4,
-    #[strum(serialize = "lz4+sh")]
-    Lz4ByteShuffling,
-    #[strum(serialize = "lz4hc")]
-    Lz4HC,
-    #[strum(serialize = "lz4hc+sh")]
-    Lz4HCByteShuffling,
+#[derive(Clone, Debug, PartialEq)]
+pub struct Compression {
+    pub algorithm: CompressionAlgorithm,
+    /// Will always have at least one element, even if no sub-blocks were specified
+    /// in that case, sub-blocks will be one element, initialized with compressed-size taken from the data block,
+    /// and uncompressed-size taken from the compression attribute
+    /// * Not exposed in public API because compressed size is not always reliable
+    pub(crate) sub_blocks: SubBlocks,
+    /// The `NonZeroUsize` is the item size
+    pub byte_shuffling: Option<NonZeroUsize>,
 }
-impl CompressionAlgorithm {
-    pub fn is_shuffled(&self) -> bool {
-        match self {
-            Self::Zlib | Self::Lz4 | Self::Lz4HC => false,
-            Self::ZlibByteShuffling | Self::Lz4ByteShuffling | Self::Lz4HCByteShuffling => true,
-        }
+impl Compression {
+    /// Calculated from the sum of sub-block uncompressed sizes. Not zero cost!
+    pub fn uncompressed_size(&self) -> usize {
+        self.sub_blocks.0.iter().map(|(_, un)| un).sum()
     }
 }
 
-// TODO: integrate more closely with subblocks
-#[derive(Clone, Debug, PartialEq)]
-pub enum Compression {
-    Zlib(usize),
-    ZlibByteShuffling(usize, usize),
-    Lz4(usize),
-    Lz4ByteShuffling (usize, usize),
-    Lz4HC(usize),
-    Lz4HCByteShuffling(usize, usize),
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CompressionAlgorithm {
+    Zlib,
+    Lz4,
+    Lz4HC,
 }
-impl Compression {
+
+/// Only used as an intermediate step in decoding, never exposed as part of the API
+/// Enum fields follow the pattern uncompressed-size, byte-shuffling-item-size
+#[derive(Clone, Debug, PartialEq)]
+enum CompressionAttr {
+    Zlib(usize),
+    ZlibByteShuffling(usize, NonZeroUsize),
+    Lz4(usize),
+    Lz4ByteShuffling (usize, NonZeroUsize),
+    Lz4HC(usize),
+    Lz4HCByteShuffling(usize, NonZeroUsize),
+}
+impl CompressionAttr {
+    pub fn algorithm(&self) -> CompressionAlgorithm {
+        match self {
+            Self::Zlib(_) | Self::ZlibByteShuffling(..) => CompressionAlgorithm::Zlib,
+            Self::Lz4(_) | Self::Lz4ByteShuffling(..) => CompressionAlgorithm::Lz4,
+            Self::Lz4HC(_) | Self::Lz4HCByteShuffling(..) => CompressionAlgorithm::Lz4HC,
+        }
+    }
     pub fn uncompressed_size(&self) -> usize {
         match self {
-            &Compression::Zlib(size) => size,
-            &Compression::ZlibByteShuffling(size, _) => size,
-            &Compression::Lz4(size) => size,
-            &Compression::Lz4ByteShuffling(size, _) => size,
-            &Compression::Lz4HC(size) => size,
-            &Compression::Lz4HCByteShuffling(size, _) => size,
+            &Self::Zlib(size) => size,
+            &Self::ZlibByteShuffling(size, _) => size,
+            &Self::Lz4(size) => size,
+            &Self::Lz4ByteShuffling(size, _) => size,
+            &Self::Lz4HC(size) => size,
+            &Self::Lz4HCByteShuffling(size, _) => size,
         }
     }
-    pub fn is_shuffled(&self) -> bool {
+    pub fn shuffle_item_size(&self) -> Option<NonZeroUsize> {
         match self {
-            Self::Zlib(_) | Self::Lz4(_) | Self::Lz4HC(_) => false,
-            Self::ZlibByteShuffling(..) | Self::Lz4ByteShuffling(..) | Self::Lz4HCByteShuffling(..) => true,
-        }
-    }
-    pub fn shuffle_item_size(&self) -> Option<usize> {
-        match self {
-            Compression::Zlib(_) | Compression::Lz4(_) | Compression::Lz4HC(_) => None,
-            &Compression::ZlibByteShuffling(_, item_size) => Some(item_size),
-            &Compression::Lz4ByteShuffling(_, item_size) => Some(item_size),
-            &Compression::Lz4HCByteShuffling(_, item_size) => Some(item_size),
+            Self::Zlib(_) | Self::Lz4(_) | Self::Lz4HC(_) => None,
+            &Self::ZlibByteShuffling(_, item_size) => Some(item_size),
+            &Self::Lz4ByteShuffling(_, item_size) => Some(item_size),
+            &Self::Lz4HCByteShuffling(_, item_size) => Some(item_size),
         }
     }
 }
-impl fmt::Display for Compression {
+impl fmt::Display for CompressionAttr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Zlib(uncompressed_size) =>
@@ -594,7 +653,7 @@ impl fmt::Display for Compression {
         }
     }
 }
-impl FromStr for Compression {
+impl FromStr for CompressionAttr {
     type Err = Report<ParseValueError>;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         const CONTEXT: ParseValueError = ParseValueError("Compression");
@@ -612,21 +671,27 @@ impl FromStr for Compression {
             )),
             &["zlib+sh", uncompressed_size, item_size] => Ok(Self::ZlibByteShuffling(
                 parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
-                parse_size(item_size, ITEM_SIZE_ERR)?
+                NonZeroUsize::new(parse_size(item_size, ITEM_SIZE_ERR)?)
+                    .ok_or(report!(CONTEXT))
+                    .attach_printable("Byte shuffling item size cannot be zero")?
             )),
             &["lz4", uncompressed_size] => Ok(Self::Lz4(
                 parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?
             )),
             &["lz4+sh", uncompressed_size, item_size] => Ok(Self::Lz4ByteShuffling(
                 parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
-                parse_size(item_size, ITEM_SIZE_ERR)?
+                NonZeroUsize::new(parse_size(item_size, ITEM_SIZE_ERR)?)
+                    .ok_or(report!(CONTEXT))
+                    .attach_printable("Byte shuffling item size cannot be zero")?
             )),
             &["lz4hc", uncompressed_size] => Ok(Self::Lz4HC(
                 parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?
             )),
             &["lz4hc+sh", uncompressed_size, item_size] => Ok(Self::Lz4HCByteShuffling(
                 parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
-                parse_size(item_size, ITEM_SIZE_ERR)?
+                NonZeroUsize::new(parse_size(item_size, ITEM_SIZE_ERR)?)
+                    .ok_or(report!(CONTEXT))
+                    .attach_printable("Byte shuffling item size cannot be zero")?
             )),
             _bad => Err(report!(CONTEXT)).attach_printable(format!(
                 "Unrecognized pattern: expected one of [zlib:len, zlib+sh:len:item-size, lz4:len, lz4+sh:len:item-size, lz4hc:len, lz4hc+sh:len:item-size], found {s}"
@@ -635,9 +700,9 @@ impl FromStr for Compression {
     }
 }
 
-// tuples of (compressed size, uncompressed size)
+/// Tuples of (compressed size, uncompressed size)
 #[derive(Clone, PartialEq)]
-pub struct SubBlocks(pub Vec<(u64, u64)>);
+pub struct SubBlocks(pub Vec<(usize, usize)>); // TODO: NonZeroUsize, also consider if putting in the work to change this to u64 actually gets me anything
 impl fmt::Debug for SubBlocks {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -664,19 +729,23 @@ impl FromStr for SubBlocks {
         for token in s.split(":") {
             if let Some((uncompressed_size, item_size)) = token.split_once(",") {
                 sub_blocks.push((
-                    parse_auto_radix::<u64>(uncompressed_size.trim())
+                    parse_auto_radix::<usize>(uncompressed_size.trim())
                         .into_report()
                         .change_context(CONTEXT)?,
 
-                    parse_auto_radix::<u64>(item_size.trim())
+                    parse_auto_radix::<usize>(item_size.trim())
                         .into_report()
                         .change_context(CONTEXT)?,
                 ));
             } else {
-                return Err(report!(CONTEXT)).attach_printable(format!("Expected pattern x,i:y,j:..:z,k, found {s}"));
+                return Err(report!(CONTEXT)).attach_printable(format!("Expected pattern x,i:y,j:...:z,k, found {s}"));
             }
         }
-        Ok(Self(sub_blocks))
+        if sub_blocks.len() == 0 {
+            return Err(report!(CONTEXT)).attach_printable("Requires at least one compressed-size,uncompressed-size pair");
+        } else {
+            Ok(Self(sub_blocks))
+        }
     }
 }
 

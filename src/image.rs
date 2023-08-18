@@ -261,8 +261,9 @@ impl Image {
         }
 
         match &self.data_block.compression {
-            Some(compression) if compression.is_shuffled() => {
-                let item_size = compression.shuffle_item_size().unwrap();
+            Some(compression) if compression.byte_shuffling.is_some() => {
+                // unwrap is safe because we just checked is_some()
+                let item_size = compression.byte_shuffling.unwrap().into();
                 // byte shuffling is a nop for 1 or 0 size items
                 // not sure why any implementation would encode it like this, but best to save the clone I guess
                 if item_size > 1 {

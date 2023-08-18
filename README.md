@@ -14,15 +14,14 @@ N-D Images | :white_check_mark: | [:x:](https://gitea.nouspiro.space/nou/libXISF
 Pixel Sample Formats | Scalar | Agnostic (Raw Bytes Only) | Scalar ([except 64-bit integers](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L599)), Complex
 Image Metadata | Attributes only | FITS Keywords, XISF Properties, Thumbnail, CFA, ICC Profile | [Missing imageType, offset, orientation, and uuid attributes](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L815)
 Supported XISF Property Locations | :x: | `<Image>`<sup>1, 2</sup> | `<Image>`, `<Metadata>`<sup>1</sup>
-Data Block Compression | `zlib`, `lz4`, `lz4hc`<sup>3</sup> | `zlib`, `lz4`, `lz4hc`, `zstd`<sup>3, 4</sup> | `zlib`, `lz4`, `lz4hc`
+Data Block Compression | `zlib`, `lz4`, `lz4hc` | `zlib`, `lz4`, `lz4hc`, `zstd`<sup>3</sup> | `zlib`, `lz4`, `lz4hc`
 Checksum Verification | :white_check_mark: | :x: | :white_check_mark:
 `<Reference>` Element | :x: | :x: | :x:
 XML Digital Signature Verification | :x: | :x: | :x:
 
 1. Does not support `<Table>` properties
 2. [Int32, Float32, Float64, String, and TimePoint only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/variant.cpp#L379)
-3. Sub-blocks not yet supported
-4. `zstd` support is nonstandard
+3. Sub-blocks not yet supported (this limits supported images to 4GiB); `zstd` support is nonstandard
 
 ## Dependencies
 - Minimum Supported Rust Version (MSRV): 1.64.0, verified for `x86_64-unknown-linux-gnu`
@@ -63,6 +62,7 @@ XML Digital Signature Verification | :x: | :x: | :x:
   - I could feasibly extend the spec to handle 128-bit pixel samples -- but does anyone actually want that?
 - [ ] Remote resources
   - Mitigating security risks?? RCE hazard; some protocols may leak credentials on mount; all will leak IP
+  - Ask user to trust a specific source before downloading -- caching or permanently saving preferences per source address is out of scope
   - `remotefs` crate? Covers (S)FTP+SCP+SMB+S3, that plus an HTTP(S) client should cover most use cases
   - Some kind of file cache to avoid re-downloading? Check for changes in file size and last modified with `stat` to ensure up-to-date, and make an option to re-download a specific file in `DataBlock`'s read functions
     - HTTP(S) supports a more fine-grained cache with `ETag`/`If-None-Match`, `Last-Modified`/`If-Modified-Since` and `Cache-Control` headers
