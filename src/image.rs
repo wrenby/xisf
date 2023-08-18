@@ -4,7 +4,7 @@ use byteorder::{ReadBytesExt, LE, BE};
 use digest::Digest;
 use error_stack::{IntoReport, Report, report, ResultExt};
 use libxml::{readonly::RoNode, xpath::Context as XpathContext};
-use ndarray::{ArrayD, IxDyn};
+use ndarray::{ArrayD, IxDyn, Array2};
 use num_complex::Complex;
 use parse_int::parse as parse_auto_radix;
 use sha1::Sha1;
@@ -271,8 +271,8 @@ impl Image {
                     if n * item_size != compression.uncompressed_size() {
                         return Err(report!(ReadDataBlockError)).attach_printable("Uncompressed size is not divisible by item size")
                     }
-                    // to unshuffle, call this same code block &[n, item_size] instead of &[item_size, n]
-                    let mut buf = ArrayD::<u8>::zeros(IxDyn(&[n, item_size]));
+                    // to unshuffle, call this same code block [n, item_size] instead of [item_size, n]
+                    let mut buf = Array2::<u8>::zeros([n, item_size]);
                     reader.read_exact(buf.as_slice_memory_order_mut().unwrap())
                         .into_report()
                         .change_context(ReadDataBlockError)
