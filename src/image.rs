@@ -548,12 +548,12 @@ impl FromStr for Orientation {
         match s {
             "0" => Ok(Self { rotation: Rotation::None, hflip: false }),
             "flip" => Ok(Self { rotation: Rotation::None, hflip: true }),
-            "90" => Ok(Self { rotation: Rotation::None, hflip: false }),
-            "90;flip" => Ok(Self { rotation: Rotation::None, hflip: true }),
-            "-90" => Ok(Self { rotation: Rotation::None, hflip: false }),
-            "-90;flip" => Ok(Self { rotation: Rotation::None, hflip: true }),
-            "180" => Ok(Self { rotation: Rotation::None, hflip: false }),
-            "180;flip" => Ok(Self { rotation: Rotation::None, hflip: true }),
+            "90" => Ok(Self { rotation: Rotation::Ccw90, hflip: false }),
+            "90;flip" => Ok(Self { rotation: Rotation::Ccw90, hflip: true }),
+            "-90" => Ok(Self { rotation: Rotation::Cw90, hflip: false }),
+            "-90;flip" => Ok(Self { rotation: Rotation::Cw90, hflip: true }),
+            "180" => Ok(Self { rotation: Rotation::_180, hflip: false }),
+            "180;flip" => Ok(Self { rotation: Rotation::_180, hflip: true }),
             bad => Err(report!(ParseValueError("Orientation")))
                 .attach_printable(format!("Expected one of [0, flip, 90, 90;flip, -90, -90;flip, 180, 180;flip], found {bad}",))
         }
