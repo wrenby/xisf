@@ -165,9 +165,9 @@ impl Image {
 
         let uid = attrs.remove("uid");
         if let Some(uid) = &uid {
-            if !uid.chars().all(|c| c.is_alphanumeric()) {
+            if uid.starts_with(char::is_alphanumeric) || !uid[1..].chars().all(|c| c.is_alphanumeric() || c == '_') {
                 return Err(report!(CONTEXT)).attach_printable(
-                    format!("Invalid uid attribute: expected all characters to be alphanumeric, found \"{uid}\"")
+                    format!("Invalid uid attribute: must match regex [_a-zA-Z][_a-zA-Z0-9]*, found \"{uid}\"")
                 )
             }
             // TODO: verify uid uniqueness
@@ -177,7 +177,7 @@ impl Image {
         if let Some(id) = &id {
             if !id.chars().all(|c| c.is_alphanumeric()) {
                 return Err(report!(CONTEXT)).attach_printable(
-                    format!("Invalid id attribute: expected all characters to be alphanumeric, found \"{id}\"")
+                    format!("Invalid id attribute: must match regex [_a-zA-Z][_a-zA-Z0-9]*, found \"{id}\"")
                 )
             }
         }
@@ -223,6 +223,18 @@ impl Image {
     }
     pub fn num_channels(&self) -> usize {
         self.geometry[0]
+    }
+    /// Called nominal channels in the spec, equivalent to `num_channels().max(3)`
+    pub fn num_color_channels(&self) -> usize {
+        self.geometry[0].max(3)
+    }
+    /// Any channel after the first three is considered an alpha channel
+    pub fn num_alpha_channels(&self) -> usize {
+        if self.geometry[0] > 3 {
+            self.geometry[0] - 3
+        } else {
+            0
+        }
     }
 
     // TODO: convert CIE L*a*b images to RGB
@@ -321,21 +333,82 @@ impl Image {
                     Box::<dyn Read>::read_f64_into::<BE>
                 )?
             )),
-            // TODO read complex images
             SampleFormat::Complex32 => {
-                Err(report!(ReadDataBlockError))
-                    .attach_printable("Reading complex-valued images is not yet supported")
+                let mut buf;
+                match self.pixel_storage {
+                    PixelStorage::Planar => {
+                        buf = ArrayD::<Complex<f32>>::zeros(IxDyn(&self.geometry[..]));
+                        let buf_slice = buf.as_slice_mut()
+                            .ok_or(report!(ReadDataBlockError))
+                            .attach_printable("Failed to get write access to output buffer")?;
+                        let bytemuck_slice: &mut [f32] = bytemuck::cast_slice_mut(buf_slice);
+
+                        match self.data_block.byte_order {
+                            ByteOrder::Big => reader.read_f32_into::<BE>(bytemuck_slice),
+                            ByteOrder::Little => reader.read_f32_into::<LE>(bytemuck_slice),
+                        }.into_report().change_context(ReadDataBlockError)?;
+                    }
+                    PixelStorage::Normal => {
+                        let mut geometry = self.geometry.clone();
+                        geometry.rotate_left(1);
+                        buf = ArrayD::<Complex<f32>>::zeros(IxDyn(&geometry[..]));
+                        let buf_slice = buf.as_slice_mut()
+                            .ok_or(report!(ReadDataBlockError))
+                            .attach_printable("Failed to get write access to output buffer")?;
+                        let bytemuck_slice: &mut [f32] = bytemuck::cast_slice_mut(buf_slice);
+                        match self.data_block.byte_order {
+                            ByteOrder::Big => reader.read_f32_into::<BE>(bytemuck_slice),
+                            ByteOrder::Little => reader.read_f32_into::<LE>(bytemuck_slice),
+                        }.into_report().change_context(ReadDataBlockError)?;
+                        // move the channel axis to the beginning instead of the end
+                        // ! this is not reflected in the memory layout of the array
+                        let mut axes: Vec<_> = (0..self.geometry.len()).into_iter().collect();
+                        axes.rotate_right(1);
+                        buf = buf.permuted_axes(axes.as_slice());
+                    }
+                }
+                Ok(ImageData::Complex32(buf))
             }
             SampleFormat::Complex64 => {
-                Err(report!(ReadDataBlockError))
-                    .attach_printable("Reading complex-valued images is not yet supported")
+                let mut buf;
+                match self.pixel_storage {
+                    PixelStorage::Planar => {
+                        buf = ArrayD::<Complex<f64>>::zeros(IxDyn(&self.geometry[..]));
+                        let buf_slice = buf.as_slice_mut()
+                            .ok_or(report!(ReadDataBlockError))
+                            .attach_printable("Failed to get write access to output buffer")?;
+                        let bytemuck_slice: &mut [f64] = bytemuck::cast_slice_mut(buf_slice);
+
+                        match self.data_block.byte_order {
+                            ByteOrder::Big => reader.read_f64_into::<BE>(bytemuck_slice),
+                            ByteOrder::Little => reader.read_f64_into::<LE>(bytemuck_slice),
+                        }.into_report().change_context(ReadDataBlockError)?;
+                    }
+                    PixelStorage::Normal => {
+                        let mut geometry = self.geometry.clone();
+                        geometry.rotate_left(1);
+                        buf = ArrayD::<Complex<f64>>::zeros(IxDyn(&geometry[..]));
+                        let buf_slice = buf.as_slice_mut()
+                            .ok_or(report!(ReadDataBlockError))
+                            .attach_printable("Failed to get write access to output buffer")?;
+                        let bytemuck_slice: &mut [f64] = bytemuck::cast_slice_mut(buf_slice);
+                        match self.data_block.byte_order {
+                            ByteOrder::Big => reader.read_f64_into::<BE>(bytemuck_slice),
+                            ByteOrder::Little => reader.read_f64_into::<LE>(bytemuck_slice),
+                        }.into_report().change_context(ReadDataBlockError)?;
+                        // move the channel axis to the beginning instead of the end
+                        // ! this is not reflected in the memory layout of the array
+                        let mut axes: Vec<_> = (0..self.geometry.len()).into_iter().collect();
+                        axes.rotate_right(1);
+                        buf = buf.permuted_axes(axes.as_slice());
+                    }
+                }
+                Ok(ImageData::Complex64(buf))
             }
         }
     }
 
-    // TODO: extract out some of this to DataBlock for re-use with vector and matrix blocks
     // TODO: handle out of memory errors gracefully instead of panicking, which I assume is the default behavior
-    // TODO: read normal pixel storage and byte-shuffled compression without duplicating the whole image
     // F1 and F2 have identical signatures, but they need to be separate
     // because two functions with the same signature are not technically the same type according to rust
     fn read_data_impl<T, F1, F2>(&self, reader: &mut Box<dyn Read>, read_le: F1, read_be: F2) -> Result<ArrayD<T>, Report<ReadDataBlockError>>
@@ -343,6 +416,7 @@ impl Image {
         F2: Fn(&mut Box<dyn Read>, &mut [T]) -> std::io::Result<()>,
         T: Clone + num_traits::Zero {
         let mut buf;
+        // TODO: read as-is, and create as_normal_layout() and as_planar_layout() functions on ImageData
         match self.pixel_storage {
             PixelStorage::Planar => {
                 buf = ArrayD::<T>::zeros(IxDyn(&self.geometry[..]));

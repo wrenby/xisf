@@ -11,12 +11,12 @@ License | MIT | GPLv3 | Custom
 Monolithic Files | Decode | Encode + Decode | Encode + Decode
 Distributed Files | :x: | :x: | :x:
 N-D Images | :white_check_mark: | [:x:](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816) | [:x:](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001)
-Pixel Sample Formats | Scalar | Agnostic (Raw Bytes Only) | Scalar<sup>1</sup>, Complex
+Pixel Sample Formats | Scalar, Complex | Agnostic (Raw Bytes Only) | Scalar<sup>1</sup>, Complex
 Image Metadata | Attributes | <details>Attributes<sup>1</sup>, FITS Keywords, XISF Properties, Thumbnail, CFA, ICC Profile</details> | <details>Attributes<sup>2</sup>, FITS Keywords, XISF Properties, Thumbnail, CFA, ICC Profile, *RGB Working Space, Display Function, Resolution*</details>
 Supported XISF Property Locations | :x: | `<Image>`<sup>4</sup> | `<Image>`, `<Metadata>`, `<xisf>`
 `<Table>` Element | :x: | :x: | :x:
 `<Reference>` Element | :x: | :x: | :x:
-Data Block Compression | <details><summary>:white_check_mark:</summary>`zlib`, `lz4`, `lz4hc`</details> | <details><summary>:white_check_mark:<sup>4</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>:white_check_mark:</summary>`zlib`, `lz4`, `lz4hc`</details>
+Data Block Compression | <details><summary>:white_check_mark:</summary>`zlib`, `lz4`, `lz4hc`</details> | <details><summary>:white_check_mark:<sup>5</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>:white_check_mark:</summary>`zlib`, `lz4`, `lz4hc`</details>
 Checksum Verification | :white_check_mark: | :x: | :white_check_mark:
 XML Digital Signature Verification | :x: | :x: | :x:
 
@@ -41,17 +41,12 @@ XML Digital Signature Verification | :x: | :x: | :x:
   - Not quite at baseline support: doesn't respect the `subblocks` attribute, meaning this implementation is limited to 4GiB files
   - Is something like a `MultiTake` or `VariableChunksIter` wrapper possible? YES: see `Take<T>::set_limit` ([proof of concept](https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=b6a55f09c803a8f3d48291b429455e46))
 - [x] Checksum verification
+- [x] Images of complex numbers
 - [ ] Make a decent public API instead of leaving everything `pub`
   - `ReadOptions` and `WriteOptions` should probably have Builders to avoid breaking changes if I add something new
   - Gate `ndarray` things behind an enabled-by-default feature, and expose a way to get raw `Vec`s
 - [ ] Improve logging with span guards
 - [ ] Write monolithic files
-- [ ] Images of complex numbers
-  - Spec doesn't actually clarify how these get serialized into binary, but `Complex` with C's complex types so I think I can just use that
-  - Read into one big slice, then `ndarray::azip` macro on slices to construct the final complex? The cloning feels really unnecessary but it would definitely work. Could do that and improve it later.
-  - Maybe implement my own trait wrapper á la `byteorder`?
-  - Maybe do some memory magic, maybe not exactly `transmute` but something like it
-  - Leading idea: integrate a helper library like `scroll` (`gread_inout` seems really promising) or `zerocopy`
 - [ ] `<FITSKeyword>` element
 - [ ] Scalar, Complex, String, and TimePoint `<Property>` elements
 - [ ] Image thumbnails: turn `read_data` into a trait

@@ -21,25 +21,28 @@ use data_block::{ChecksumAlgorithm, CompressionAlgorithm, CompressionLevel};
 pub mod image;
 use image::Image;
 
+#[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct ReadOptions {
     // read FITSKeyword headers from the XML header
     pub import_fits_keywords: bool,
     // import FITSKeyword headers as XISF <Property> tags with the prefix FITS:
     pub fits_keywords_as_properties: bool,
-    // replace NaNs, infinities, and negative zeros with the lower bound for floating-point images
-    pub fix_non_finite: bool,
+    // clamp all pixel samples to the range specified in the bounds attribute
+    // for floating-point images: NaNs, infinities, and negative zeros are replaced with the lower bound
+    pub clamp_to_bounds: bool,
 }
 impl Default for ReadOptions {
     fn default() -> Self {
         Self {
             import_fits_keywords: true,
             fits_keywords_as_properties: false,
-            fix_non_finite: true,
+            clamp_to_bounds: true,
         }
     }
 }
 
+#[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct WriteOptions {
     // name of the application using this library
@@ -62,7 +65,7 @@ pub struct WriteOptions {
     pub max_inline_block_size: u16,
 }
 impl WriteOptions {
-    pub fn new(app_name: impl Into<String>) -> Self {
+    pub fn default_with_app_name(app_name: impl Into<String>) -> Self {
         Self {
             creator_application: app_name.into(),
             export_fits_keywords: true,

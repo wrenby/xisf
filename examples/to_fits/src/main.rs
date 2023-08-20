@@ -45,13 +45,16 @@ fn main() {
         }
     }
 
-    let xisf = xisf_rs::XISF::read_file("test-files/BiasStacked/test.xisf", &Default::default()).expect("parse header");
+    let mut args = pico_args::Arguments::from_env();
+    let input: String = args.value_from_str("--in").expect("--in");
+
+    let xisf = xisf_rs::XISF::read_file(input, &Default::default()).expect("parse header");
     println!("{xisf:#?}");
 
     // passing the file as a &mut Option because we want to do something different the first time this is run
     // several FITS readers expect the primary hdu to contain image information in files with multiple images,
     // so we need a mechanism to create a primary hdu (that is, open the file itself) on demand to fit image specifications
-    fn write_array<T: WriteImage + Clone + Debug + 'static>(fits: &mut Option<FitsFile>, arr: &ArrayD<T>, name: impl AsRef<str>, format: ImageType) {
+    fn write_array<T: WriteImage + Clone + Debug + 'static>(fits: &mut Option<FitsFile>, out_name: &str, arr: &ArrayD<T>, name: impl AsRef<str>, format: ImageType) {
         println!("{:?}", arr);
         // remove channel as an axis if there's only one
         let trim = if arr.shape().starts_with(&[1]) { 1 } else { 0 };
@@ -62,7 +65,7 @@ fn main() {
 
         let first_image = fits.is_none();
         let fits = fits.get_or_insert_with(|| {
-            fitsio::FitsFile::create("test-files/BiasStacked/converted.fits")
+            fitsio::FitsFile::create(out_name)
                 .overwrite()
                 .with_custom_primary(&image_description)
                 .open()
@@ -89,16 +92,17 @@ fn main() {
     }
 
     let mut fits = None;
+    let out: String = args.value_from_str("--out").expect("--out");
     for (i, image) in xisf.images.iter().enumerate() {
         let data = image.read_data(&xisf).expect(format!("read image {i} data").as_str());
         let name = image.id.clone().unwrap_or(format!("IMAGE_{i}"));
         match data {
-            ImageData::UInt8(arr) => write_array(&mut fits, &arr, name, ImageType::UnsignedByte),
-            ImageData::UInt16(arr) => write_array(&mut fits, &arr, name, ImageType::UnsignedShort),
-            ImageData::UInt32(arr) => write_array(&mut fits, &arr, name, ImageType::UnsignedLong),
-            ImageData::UInt64(arr) => write_array(&mut fits, &arr, name, ImageType::LongLong),
-            ImageData::Float32(arr) => write_array(&mut fits, &arr, name, ImageType::Float),
-            ImageData::Float64(arr) => write_array(&mut fits, &arr, name, ImageType::Double),
+            ImageData::UInt8(arr) => write_array(&mut fits, &out, &arr, name, ImageType::UnsignedByte),
+            ImageData::UInt16(arr) => write_array(&mut fits, &out, &arr, name, ImageType::UnsignedShort),
+            ImageData::UInt32(arr) => write_array(&mut fits, &out, &arr, name, ImageType::UnsignedLong),
+            ImageData::UInt64(arr) => write_array(&mut fits, &out, &arr, name, ImageType::LongLong),
+            ImageData::Float32(arr) => write_array(&mut fits, &out, &arr, name, ImageType::Float),
+            ImageData::Float64(arr) => write_array(&mut fits, &out, &arr, name, ImageType::Double),
             ImageData::Complex32(_) | ImageData::Complex64(_) => eprintln!("FITS does not support complex images"),
         }
     }
