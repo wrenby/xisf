@@ -12,6 +12,15 @@ impl Display for ParseValueError {
 }
 impl Error for ParseValueError {}
 
+#[derive(Clone, Debug)]
+pub struct ReferenceError;
+impl Display for ReferenceError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Invalid Reference element")
+    }
+}
+impl Error for ReferenceError {}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ParseNodeError(pub &'static str);
 impl Display for ParseNodeError {

@@ -15,7 +15,7 @@ Pixel Sample Formats | Scalar, Complex | Agnostic (Raw Bytes Only) | Scalar<sup>
 Image Metadata | Attributes | <details>Attributes<sup>1</sup>, FITS Keywords, XISF Properties, Thumbnail, CFA, ICC Profile</details> | <details>Attributes<sup>2</sup>, FITS Keywords, XISF Properties, Thumbnail, CFA, ICC Profile, *RGB Working Space, Display Function, Resolution*</details>
 Supported XISF Property Locations | :x: | `<Image>`<sup>4</sup> | `<Image>`, `<Metadata>`, `<xisf>`
 `<Table>` Element | :x: | :x: | :x:
-`<Reference>` Element | :x: | :x: | :x:
+`<Reference>` Element | :white_check_mark: | :x: | :x:
 Data Block Compression | <details><summary>:white_check_mark:</summary>`zlib`, `lz4`, `lz4hc`</details> | <details><summary>:white_check_mark:<sup>5</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>:white_check_mark:</summary>`zlib`, `lz4`, `lz4hc`</details>
 Checksum Verification | :white_check_mark: | :x: | :white_check_mark:
 XML Digital Signature Verification | :x: | :x: | :x:
@@ -34,17 +34,12 @@ XML Digital Signature Verification | :x: | :x: | :x:
 
 # Road Map
 
-- [x] Read images: Only uncompressed scalar N-dimensional images for N &ge; 1
-  - Supports `Planar` and `Normal` pixel storage modes
-    - Consider not enforcing a read into `Planar`-organized memory: how to associate an image geometry with the array if its shape is no longer an indicator?
+- [x] Read raw images
 - [x] Data block compression
-  - Not quite at baseline support: doesn't respect the `subblocks` attribute, meaning this implementation is limited to 4GiB files
-  - Is something like a `MultiTake` or `VariableChunksIter` wrapper possible? YES: see `Take<T>::set_limit` ([proof of concept](https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=b6a55f09c803a8f3d48291b429455e46))
 - [x] Checksum verification
 - [x] Images of complex numbers
+- [x] `<Reference>` element
 - [ ] Make a decent public API instead of leaving everything `pub`
-  - `ReadOptions` and `WriteOptions` should probably have Builders to avoid breaking changes if I add something new
-  - Gate `ndarray` things behind an enabled-by-default feature, and expose a way to get raw `Vec`s
 - [ ] Improve logging with span guards
 - [ ] Write monolithic files
 - [ ] `<FITSKeyword>` element
@@ -52,19 +47,14 @@ XML Digital Signature Verification | :x: | :x: | :x:
 - [ ] Image thumbnails: turn `read_data` into a trait
 - [ ] Documentation and tests
 - [ ] `fitsio` interoperability feature
-- [ ] `<Reference>` element: `impl MaybeReference for RoNode`
 - [ ] CIE L\*a\*b color space conversion -- is this out of scope?
 - [ ] 128-bit floating point `<Property>` types ([`rustc_apfloat::ieee::Quad`](https://doc.rust-lang.org/stable/nightly-rustc/rustc_apfloat/ieee/type.Quad.html)?)
-  - Supports binary de/serialization with [`from_bits`](https://doc.rust-lang.org/stable/nightly-rustc/rustc_apfloat/trait.Float.html#tymethod.from_bits) and [`to_bits`](https://doc.rust-lang.org/stable/nightly-rustc/rustc_apfloat/trait.Float.html#tymethod.to_bits), with the middle step of reading to `u128` first
-  - Necessary because vectors and matrices are stored in data blocks
-  - I could feasibly extend the spec to handle 128-bit pixel samples -- but does anyone actually want that?
+  - Supports binary de/serialization with [`from_bits`](https://doc.rust-lang.org/stable/nightly-rustc/rustc_apfloat/trait.Float.html#tymethod.from_bits) and [`to_bits`](https://doc.rust-lang.org/stable/nightly-rustc/rustc_apfloat/trait.Float.html#tymethod.to_bits), with the middle step of reading to `u128` first. `bytemuck` support?
 - [ ] Remote resources
-  - Mitigating security risks?? RCE hazard; some protocols may leak credentials on mount; all will leak IP
-  - Ask user to trust a specific source before downloading -- caching or permanently saving preferences per source address is out of scope
+  - Ask user to trust a specific source before connecting -- caching or permanently saving preferences per source address is out of scope
   - `remotefs` crate? Covers (S)FTP+SCP+SMB+S3, that plus an HTTP(S) client should cover most use cases
-  - Some kind of file cache to avoid re-downloading? Check for changes in file size and last modified with `stat` to ensure up-to-date, and make an option to re-download a specific file in `DataBlock`'s read functions
+  - Some kind of file cache to avoid re-downloading? Consider `tempfile` crate. Check for changes in file size and last modified with `stat` to ensure up-to-date, and make an option to re-download a specific file in `DataBlock`'s read functions
     - HTTP(S) supports a more fine-grained cache with `ETag`/`If-None-Match`, `Last-Modified`/`If-Modified-Since` and `Cache-Control` headers
-    - Consider `tempfile`, `memmap2` crates
 - [ ] Vector, Matrix `<Property>` elements
   - Need to look at `cfitsio` for inspiration here
 - [ ] XML Digital Signature verification

@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::{
     data_block::{DataBlock, ByteOrder, Checksum},
     error::{ReadDataBlockError, ParseValueError},
+    is_valid_id,
     ReadOptions,
     ParseNodeError,
 };
@@ -165,7 +166,7 @@ impl Image {
 
         let uid = attrs.remove("uid");
         if let Some(uid) = &uid {
-            if uid.starts_with(char::is_alphanumeric) || !uid[1..].chars().all(|c| c.is_alphanumeric() || c == '_') {
+            if is_valid_id(uid) {
                 return Err(report!(CONTEXT)).attach_printable(
                     format!("Invalid uid attribute: must match regex [_a-zA-Z][_a-zA-Z0-9]*, found \"{uid}\"")
                 )
@@ -175,7 +176,7 @@ impl Image {
 
         let id = attrs.remove("id");
         if let Some(id) = &id {
-            if !id.chars().all(|c| c.is_alphanumeric()) {
+            if !is_valid_id(id) {
                 return Err(report!(CONTEXT)).attach_printable(
                     format!("Invalid id attribute: must match regex [_a-zA-Z][_a-zA-Z0-9]*, found \"{id}\"")
                 )
