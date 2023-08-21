@@ -21,15 +21,17 @@ use data_block::{ChecksumAlgorithm, CompressionAlgorithm, CompressionLevel};
 pub mod image;
 use image::Image;
 
+pub mod metadata;
+
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct ReadOptions {
-    // read FITSKeyword headers from the XML header
+    /// read FITSKeyword headers from the XML header
     pub import_fits_keywords: bool,
-    // import FITSKeyword headers as XISF <Property> tags with the prefix FITS:
+    /// import FITSKeyword headers as XISF <Property> tags with the prefix FITS:
     pub fits_keywords_as_properties: bool,
-    // clamp all pixel samples to the range specified in the bounds attribute
-    // for floating-point images: NaNs, infinities, and negative zeros are replaced with the lower bound
+    /// clamp all pixel samples to the range specified in the bounds attribute
+    /// for floating-point images: NaNs, infinities, and negative zeros are replaced with the lower bound
     pub clamp_to_bounds: bool,
 }
 impl Default for ReadOptions {
@@ -45,23 +47,23 @@ impl Default for ReadOptions {
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct WriteOptions {
-    // name of the application using this library
+    /// name of the application using this library
     pub creator_application: String,
-    // write FITS headers as FITSKeyword elements in the XML header
+    /// write FITS headers as FITSKeyword elements in the XML header
     pub export_fits_keywords: bool,
-    // algorithm used for XISF data block checksum calculations
+    /// algorithm used for XISF data block checksum calculations
     pub checksum_alg: Option<ChecksumAlgorithm>,
-    // algorithm used to compress XISF data blocks
+    /// algorithm used to compress XISF data blocks
     pub compression_alg: Option<(CompressionAlgorithm, CompressionLevel)>,
-    // lower bound for floating-point pixel samples
+    /// lower bound for floating-point pixel samples
     pub fp_lower_bound: f64,
-    // upper bound for floating-point pixel samples
+    /// upper bound for floating-point pixel samples
     pub fp_upper_bound: f64,
-    // data blocks are allocated with block sizes of integer multiples of this value, in bytes
+    /// data blocks are allocated with block sizes of integer multiples of this value, in bytes
     pub block_alignment_size: u16,
-    // max size (in bytes) that an XISF data block can be before it can no longer be inlined/embedded
-    // recommended value: 3/4 the size of block_alignment_size (or a multiple of it), since base64 takes 4 chars to encode 3 bytes
-    // that is, a maximum-size inline data block can be base64-encoded into a buffer the same size as the block alignment size
+    /// max size (in bytes) that an XISF data block can be before it can no longer be inlined/embedded
+    /// recommended value: 3/4 the size of block_alignment_size (or a multiple of it), since base64 takes 4 chars to encode 3 bytes
+    /// that is, a maximum-size inline data block can be base64-encoded into a buffer the same size as the block alignment size
     pub max_inline_block_size: u16,
 }
 impl WriteOptions {
@@ -81,8 +83,8 @@ impl WriteOptions {
 
 #[derive(Clone, Debug)]
 pub struct XISF {
-    pub filename: PathBuf,
-    pub images: Vec<Image>,
+    filename: PathBuf,
+    images: Vec<Image>,
 }
 impl XISF {
     pub fn read_file(filename: impl AsRef<Path>, opts: &ReadOptions) -> Result<Self, Report<ReadFileError>> {
@@ -223,6 +225,7 @@ impl XISF {
             child = child.follow_reference(xpath).change_context(CONTEXT)?;
             match child.get_name().as_str() {
                 "Image" => images.push(Image::parse_node(child, xpath, opts).change_context(CONTEXT)?),
+                // TODO: check if the unrecognized node has a uid tag with a reference to it somewhere before emitting a warning
                 _ => tracing::warn!("Ignoring unrecognized child node <{}>", child.get_name()),
             }
         }
@@ -231,6 +234,10 @@ impl XISF {
             filename: filename.as_ref().to_owned(),
             images,
         })
+    }
+
+    pub fn images(&self) -> &Vec<Image> {
+        &self.images
     }
 }
 
@@ -246,7 +253,7 @@ impl MaybeReference for RoNode {
             if let Some(target) = self.get_attribute("ref") {
                 if is_valid_id(target.as_str()) {
                     // acts as both validation and input sanitization for the xpath expression
-                    let expression = format!("*[@uid='{}']", target);
+                    let expression = format!("/*[local-name()='xisf']/[@uid='{}']", target);
                     let results = xpath.evaluate(&expression)
                         .map_err(|_| report!(ReferenceError))
                         .attach_printable("XPATH search failed")?;

@@ -12,7 +12,7 @@ Monolithic Files | Decode | Encode + Decode | Encode + Decode
 Distributed Files | :x: | :x: | :x:
 N-D Images | :white_check_mark: | [:x:](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816) | [:x:](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001)
 Pixel Sample Formats | Scalar, Complex | Agnostic (Raw Bytes Only) | Scalar<sup>1</sup>, Complex
-Image Metadata | Attributes | <details>Attributes<sup>1</sup>, FITS Keywords, XISF Properties, Thumbnail, CFA, ICC Profile</details> | <details>Attributes<sup>2</sup>, FITS Keywords, XISF Properties, Thumbnail, CFA, ICC Profile, *RGB Working Space, Display Function, Resolution*</details>
+Image Metadata | Attributes, FITS Keywords | <details>Attributes<sup>1</sup>, FITS Keywords, XISF Properties, Thumbnail, CFA, ICC Profile</details> | <details>Attributes<sup>2</sup>, FITS Keywords, XISF Properties, Thumbnail, CFA, ICC Profile, *RGB Working Space, Display Function, Resolution*</details>
 Supported XISF Property Locations | :x: | `<Image>`<sup>4</sup> | `<Image>`, `<Metadata>`, `<xisf>`
 `<Table>` Element | :x: | :x: | :x:
 `<Reference>` Element | :white_check_mark: | :x: | :x:
@@ -39,10 +39,9 @@ XML Digital Signature Verification | :x: | :x: | :x:
 - [x] Checksum verification
 - [x] Images of complex numbers
 - [x] `<Reference>` element
-- [ ] Make a decent public API instead of leaving everything `pub`
-- [ ] Improve logging with span guards
+- [x] `<FITSKeyword>` element
+  - Improve interface for searching and parsing values
 - [ ] Write monolithic files
-- [ ] `<FITSKeyword>` element
 - [ ] Scalar, Complex, String, and TimePoint `<Property>` elements
 - [ ] Image thumbnails: turn `read_data` into a trait
 - [ ] Documentation and tests

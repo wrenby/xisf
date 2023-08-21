@@ -16,10 +16,12 @@ use crate::{
     data_block::{DataBlock, ByteOrder, Checksum},
     error::{ReadDataBlockError, ParseValueError},
     is_valid_id,
+    metadata::FitsKeyword,
     ReadOptions,
-    ParseNodeError,
+    ParseNodeError, MaybeReference,
 };
 
+#[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct Image {
     pub uid: Option<String>,
@@ -37,6 +39,8 @@ pub struct Image {
     pub orientation: Orientation,
     pub id: Option<String>,
     pub uuid: Option<Uuid>,
+
+    pub fits_keywords: Vec<FitsKeyword>,
 }
 
 impl Image {
@@ -196,9 +200,15 @@ impl Image {
             tracing::warn!("Ignoring unrecognized attribute {}=\"{}\"", remaining.0, remaining.1);
         }
 
+        let mut fits_keywords = vec![];
+
         // TODO: ignore text/<Data> children of nodes with inline or embedded blocks, respectively
-        for child in node.get_child_nodes() {
-            tracing::warn!("Ignoring unrecognized child node <{}>", child.get_name());
+        for mut child in node.get_child_nodes() {
+            child = child.follow_reference(xpath).change_context(CONTEXT)?;
+            match child.get_name().as_str() {
+                "FITSKeyword" => fits_keywords.push(FitsKeyword::parse_node(child).change_context(CONTEXT)?),
+                bad => tracing::warn!("Ignoring unrecognized child node <{}>", bad),
+            }
         }
 
         Ok(Image {
@@ -216,6 +226,8 @@ impl Image {
             orientation,
             id,
             uuid,
+
+            fits_keywords,
         })
     }
 
@@ -449,8 +461,11 @@ impl Image {
         }
         Ok(buf)
     }
+
+
 }
 
+///
 #[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum SampleFormat {
     UInt8,
@@ -489,6 +504,7 @@ pub enum ImageData {
     Complex64(ArrayD<Complex<f64>>),
 }
 
+/// Describes whether this is a light frame, dark frame, flat frame, bias frame, etc
 #[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum ImageType {
     Bias,
@@ -508,13 +524,22 @@ pub enum ImageType {
     WeightMap,
 }
 
+/// Describes the memory layout of the image
+/// - In `Planar` mode (the default when none is specified), the image is stored as all of the first channel, then all of the second channel, and so on.
+///   That is, for a W\*H 2D image with 3 channels and `u8` samples, pixel *p<sub>x,y,c</sub>* is stored at byte offset *WHc + Wy + x*
+/// - In `Normal` mode, the image is stored as the first pixel (its first channel, second channel, and so on), the second pixel (its first channel, second channel, and so on), and so on.
+///   That is, for a W\*H 2D image with 3 channels and `u8` samples, pixel *p<sub>x,y,c</sub>* is stored at byte offset *3Wy + 3x + c*
+///
+/// No matter which pixel storage layout is used, the pixel samples are stored in row-major order.
+/// See [the specification](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#pixel_storage_models) for more details and a visual representation of each layout.
 #[derive(Clone, Copy, Debug, Display, Default, EnumString, EnumVariantNames, PartialEq)]
 pub enum PixelStorage {
     #[default]
-    Planar, // channels are contiguous in memory
-    Normal, // pixels are contiguous in memory
+    Planar,
+    Normal,
 }
 
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Display, Default, EnumString, EnumVariantNames, PartialEq)]
 pub enum ColorSpace {
     #[default]
@@ -523,6 +548,11 @@ pub enum ColorSpace {
     CIELab,
 }
 
+/// A transformation to be applied before visual presentation of the image
+///
+/// Rotation must be applied before the horizontal flip, if a flip is present.
+/// *Reminder: a horizontal reflection of a 2D image flips pixels across the y axis,
+/// leaving pixels on the far-right of the image on the far-left and vice-versa*
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Orientation {
     pub rotation: Rotation,

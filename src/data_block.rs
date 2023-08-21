@@ -21,7 +21,7 @@ use crate::error::{ParseValueError, ParseNodeError, ReadDataBlockError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataBlock {
-    pub location: DataBlockReference,
+    pub location: Location,
     pub byte_order: ByteOrder,
     pub checksum: Option<Checksum>,
     pub compression: Option<Compression>,
@@ -33,7 +33,8 @@ impl DataBlock {
     // passing &mut attrs isn't for the benefit of this function, but the caller function
     // (helps cut down on unnecessary "ignoring unrecognized attribute" warnings)
     pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext, context: ParseNodeError, attrs: &mut HashMap<String, String>) -> Result<Option<Self>, Report<ParseNodeError>> {
-        if let Some(location) = DataBlockReference::parse_node(node, xpath, context, attrs)? {
+        let _span_guard = tracing::debug_span!("DataBlock");
+        if let Some(location) = Location::parse_node(node, xpath, context, attrs)? {
             let byte_order = match attrs.remove("byteOrder") {
                 Some(byte_order) => {
                     byte_order.parse::<ByteOrder>()
@@ -114,38 +115,36 @@ impl DataBlock {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum DataBlockReference {
+pub enum Location {
+    /// Inline or embedded: data is encoded in a child text or <Data> node
     Plaintext {
-        // inline or embedded: data is encoded in a child text or <Data> node
         encoding: TextEncoding,
         text: String, // stripped of all whitespace
     },
+    /// Data is elsewhere in the file (only supported for monolithic XISF files)
     Attachment {
-        // data is elsewhere in the file
-        // ! only supported for monolithic XISF files
         position: u64,
         size: u64,
     },
+    /// Data is stored remotely (only supported for distributed XISF files)
     Url {
-        // data is stored remotely
-        // ! only supported for distributed XISF files
         url: Url,
         index_id: Option<u64>,
     },
+    /// Data is store elsewhere on the filesystem (only supported for distributed XISF files)
     Path {
-        // data is store elsewhere on the filesystem
-        // ! only supported for distributed XISF files
         path: PathBuf,
         index_id: Option<u64>,
     }
 }
-impl DataBlockReference {
-    // returns Ok(Some(_)) if a data block location was successfully parsed
-    // returns Ok(None) if there is no location attribute
-    // returns Err(_) if there was an error parsing the data block location
-    // passing &mut attrs isn't for the benefit of this function, but the caller function
-    // (helps cut down on unnecessary "ignoring unrecognized attribute" warnings)
+impl Location {
+    /// returns Ok(Some(_)) if a data block location was successfully parsed
+    /// returns Ok(None) if there is no location attribute
+    /// returns Err(_) if there was an error parsing the data block location
+    /// passing &mut attrs isn't for the benefit of this function, but the caller function
+    /// (helps cut down on unnecessary "ignoring unrecognized attribute" warnings)
     pub(crate) fn parse_node(node: RoNode, _xpath: &XpathContext, context: ParseNodeError, attrs: &mut HashMap<String, String>) -> Result<Option<Self>, Report<ParseNodeError>> {
+        let _span_guard = tracing::debug_span!("location");
         if let Some(attr) = attrs.remove("location") {
             match attr.split(":").collect::<Vec<_>>().as_slice() {
                 &["inline", encoding] => {
@@ -273,7 +272,7 @@ impl DataBlockReference {
         }
     }
 
-    // literally just a byte stream, with no knowledge of compression, byte shuffling, or checksums
+    /// Literally just a byte stream, with no knowledge of compression, byte shuffling, or checksums
     pub(crate) fn raw_bytes(&self, xisf: &crate::XISF) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
         let base64 = base64_simd::STANDARD;
         match self {
