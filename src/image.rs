@@ -6,6 +6,7 @@ use error_stack::{IntoReport, Report, report, ResultExt};
 use libxml::{readonly::RoNode, xpath::Context as XpathContext};
 use ndarray::{ArrayD, IxDyn, Array2};
 use num_complex::Complex;
+use ordered_multimap::ListOrderedMultimap;
 use parse_int::parse as parse_auto_radix;
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
@@ -14,9 +15,9 @@ use strum::{Display, EnumString, EnumVariantNames, VariantNames};
 use uuid::Uuid;
 use crate::{
     data_block::{DataBlock, ByteOrder, Checksum},
-    error::{ReadDataBlockError, ParseValueError},
+    error::{ReadDataBlockError, ParseValueError, ReadFitsKeyError},
     is_valid_id,
-    metadata::FitsKeyword,
+    metadata::{FitsKeyword, FromFitsStr, FitsKeyValue},
     ReadOptions,
     ParseNodeError, MaybeReference,
 };
@@ -40,11 +41,11 @@ pub struct Image {
     pub id: Option<String>,
     pub uuid: Option<Uuid>,
 
-    pub fits_keywords: Vec<FitsKeyword>,
+    pub fits_header: ListOrderedMultimap<String, FitsKeyValue>,
 }
 
 impl Image {
-    pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext, _opts: &ReadOptions) -> Result<Self, Report<ParseNodeError>> {
+    pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext, opts: &ReadOptions) -> Result<Self, Report<ParseNodeError>> {
         const CONTEXT: ParseNodeError = ParseNodeError("Image");
         let _span_guard = tracing::debug_span!("<Image>").entered();
 
@@ -200,14 +201,17 @@ impl Image {
             tracing::warn!("Ignoring unrecognized attribute {}=\"{}\"", remaining.0, remaining.1);
         }
 
-        let mut fits_keywords = vec![];
+        let mut fits_header = ListOrderedMultimap::<String, FitsKeyValue>::new();
 
         // TODO: ignore text/<Data> children of nodes with inline or embedded blocks, respectively
         for mut child in node.get_child_nodes() {
             child = child.follow_reference(xpath).change_context(CONTEXT)?;
             match child.get_name().as_str() {
-                "FITSKeyword" => fits_keywords.push(FitsKeyword::parse_node(child).change_context(CONTEXT)?),
-                bad => tracing::warn!("Ignoring unrecognized child node <{}>", bad),
+                "FITSKeyword" if opts.import_fits_keywords => {
+                    let key = FitsKeyword::parse_node(child).change_context(CONTEXT)?;
+                    let val_comm = FitsKeyValue { value: key.value, comment: key.comment };
+                    fits_header.append(key.name, val_comm);
+                }, bad => tracing::warn!("Ignoring unrecognized child node <{}>", bad),
             }
         }
 
@@ -227,7 +231,7 @@ impl Image {
             id,
             uuid,
 
-            fits_keywords,
+            fits_header,
         })
     }
 
@@ -462,7 +466,37 @@ impl Image {
         Ok(buf)
     }
 
-
+    /// Returns true iff the given FITS key is present in the header
+    pub fn fits_key_is_present(&self, name: impl AsRef<str>) -> bool {
+        self.fits_header.get(name.as_ref()).is_some()
+    }
+    /// Attempts to parse a FITS key with the given name as type `T`, following the syntax laid out in
+    /// [section 4.1](https://fits.gsfc.nasa.gov/standard40/fits_standard40aa-le.pdf#subsection.4.1) of the FITS specification.
+    /// If there is more than one key present with the given name, only the first one is returned.
+    pub fn fits_parse_key<T: FromFitsStr>(&self, name: impl AsRef<str>) -> Result<T, Report<ReadFitsKeyError>> {
+        let tup = self.fits_header.get(name.as_ref())
+            .ok_or(report!(ReadFitsKeyError::KeyNotFound))?;
+        T::from_fits_str(tup.value.as_str())
+            .change_context(ReadFitsKeyError::InvalidFormat)
+    }
+    /// Returns an iterator over all values in the FITS header matching the given name.
+    /// Each key is attempted to be parsed as type `T`, following the syntax laid out in
+    /// [section 4.1](https://fits.gsfc.nasa.gov/standard40/fits_standard40aa-le.pdf#subsection.4.1) of the FITS specification.
+    pub fn fits_parse_keys<T: FromFitsStr>(&self, name: impl AsRef<str>) -> impl Iterator<Item = Result<T, Report<ParseValueError>>> + '_ {
+        self.fits_header.get_all(name.as_ref())
+            .map(|FitsKeyValue { value: val, .. }| T::from_fits_str(val))
+    }
+    /// Returns the raw string (both value and comment) of the FITS key matching the given name
+    /// As of the time of writing, this is the only way to get comments from the FITS header
+    pub fn fits_raw_key(&self, name: impl AsRef<str>) -> Option<&FitsKeyValue> {
+        self.fits_header.get(name.as_ref())
+    }
+    /// Returns an iterator over all values (and comments) of keys in the FITS header matching the given name.
+    /// Although most keys are only allowed to appear once in a header, this is especially useful for the HISTORY keyword,
+    /// which is typically appended each time the image is processed in some way
+    pub fn fits_raw_keys(&self, name: impl AsRef<str>) -> impl Iterator<Item = &FitsKeyValue> {
+        self.fits_header.get_all(name.as_ref())
+    }
 }
 
 ///

@@ -13,6 +13,23 @@ impl Display for ParseValueError {
 impl Error for ParseValueError {}
 
 #[derive(Clone, Debug)]
+pub enum ReadFitsKeyError {
+    KeyNotFound,
+    InvalidFormat,
+}
+impl Display for ReadFitsKeyError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Failed to read FITS key: ")?;
+        match self {
+            &Self::KeyNotFound => f.write_str("Key not found in header"),
+            &Self::InvalidFormat => f.write_str("Failed to parse key value"),
+        }
+    }
+}
+impl Error for ReadFitsKeyError {}
+
+// TODO: get rid of this; replace it with a ParseNodeError
+#[derive(Clone, Debug)]
 pub struct ReferenceError;
 impl Display for ReferenceError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

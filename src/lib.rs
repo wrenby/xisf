@@ -26,12 +26,12 @@ pub mod metadata;
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct ReadOptions {
-    /// read FITSKeyword headers from the XML header
+    /// Read FITSKeyword headers from the XML header
     pub import_fits_keywords: bool,
-    /// import FITSKeyword headers as XISF <Property> tags with the prefix FITS:
+    /// Import FITSKeyword headers as XISF <Property> tags with the prefix FITS:
     pub fits_keywords_as_properties: bool,
-    /// clamp all pixel samples to the range specified in the bounds attribute
-    /// for floating-point images: NaNs, infinities, and negative zeros are replaced with the lower bound
+    /// Clamp all pixel samples to the range specified in the bounds attribute.
+    /// For floating-point images: NaNs, infinities, and negative zeros are replaced with the lower bound
     pub clamp_to_bounds: bool,
 }
 impl Default for ReadOptions {
@@ -47,23 +47,23 @@ impl Default for ReadOptions {
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct WriteOptions {
-    /// name of the application using this library
+    /// Name of the application using this library
     pub creator_application: String,
-    /// write FITS headers as FITSKeyword elements in the XML header
+    /// Write FITS headers as FITSKeyword elements in the XML header
     pub export_fits_keywords: bool,
-    /// algorithm used for XISF data block checksum calculations
+    /// Algorithm used for XISF data block checksum calculations
     pub checksum_alg: Option<ChecksumAlgorithm>,
-    /// algorithm used to compress XISF data blocks
+    /// Algorithm used to compress XISF data blocks
     pub compression_alg: Option<(CompressionAlgorithm, CompressionLevel)>,
-    /// lower bound for floating-point pixel samples
+    /// Lower bound for floating-point pixel samples
     pub fp_lower_bound: f64,
-    /// upper bound for floating-point pixel samples
+    /// Upper bound for floating-point pixel samples
     pub fp_upper_bound: f64,
-    /// data blocks are allocated with block sizes of integer multiples of this value, in bytes
+    /// Data blocks are allocated with block sizes of integer multiples of this value, in bytes
     pub block_alignment_size: u16,
-    /// max size (in bytes) that an XISF data block can be before it can no longer be inlined/embedded
-    /// recommended value: 3/4 the size of block_alignment_size (or a multiple of it), since base64 takes 4 chars to encode 3 bytes
-    /// that is, a maximum-size inline data block can be base64-encoded into a buffer the same size as the block alignment size
+    /// Max size (in bytes) that an XISF data block can be before it can no longer be inlined/embedded.
+    /// Recommended value: 3/4 the size of block_alignment_size (or a multiple of it), since base64 takes 4 chars to encode 3 bytes.
+    /// That is, a maximum-size inline data block can be base64-encoded into a buffer the same size as the block alignment size
     pub max_inline_block_size: u16,
 }
 impl WriteOptions {
@@ -236,8 +236,14 @@ impl XISF {
         })
     }
 
-    pub fn images(&self) -> &Vec<Image> {
-        &self.images
+    pub fn images(&self) -> impl Iterator<Item = &Image> {
+        self.images.iter()
+    }
+    pub fn num_images(&self) -> usize {
+        self.images.len()
+    }
+    pub fn get_image(&self, i: usize) -> &Image {
+        &self.images[i]
     }
 }
 
@@ -250,6 +256,7 @@ pub(crate) trait MaybeReference: Sized {
 impl MaybeReference for RoNode {
     fn follow_reference(self, xpath: &XpathContext) -> Result<RoNode, Report<ReferenceError>> {
         if self.get_name().as_str() == "Reference" {
+            let _span_guard = tracing::debug_span!("<Reference>").entered();
             if let Some(target) = self.get_attribute("ref") {
                 if is_valid_id(target.as_str()) {
                     // acts as both validation and input sanitization for the xpath expression

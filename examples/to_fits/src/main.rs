@@ -93,7 +93,7 @@ fn main() {
 
     let mut fits = None;
     let out: String = args.value_from_str("--out").expect("--out");
-    for (i, image) in xisf.images().iter().enumerate() {
+    for (i, image) in xisf.images().enumerate() {
         let data = image.read_data(&xisf).expect(format!("read image {i} data").as_str());
         let name = image.id.clone().unwrap_or(format!("IMAGE_{i}"));
         match data {
@@ -106,5 +106,4 @@ fn main() {
             ImageData::Complex32(_) | ImageData::Complex64(_) => eprintln!("FITS does not support complex images"),
         }
     }
-
 }
