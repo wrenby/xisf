@@ -1,4 +1,8 @@
-use std::{io::{Read, Write, Cursor}, fmt, str::FromStr};
+use std::{
+    io::{Read, Write, Cursor},
+    fmt,
+    str::FromStr
+};
 
 use byteorder::{ReadBytesExt, LE, BE};
 use digest::Digest;

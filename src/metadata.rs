@@ -5,7 +5,7 @@ use time::{OffsetDateTime, format_description::well_known::Iso8601};
 
 use crate::error::{ParseNodeError, ParseValueError};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FitsKeyword {
     pub name: String,
     pub value: String,
@@ -19,16 +19,21 @@ impl FitsKeyword {
 
         let name = attrs.remove("name")
             .ok_or(report!(CONTEXT))
-            .attach_printable("Missing name attribute")?;
+            .attach_printable("Missing name attribute")?
+            .trim()
+            .to_string();
 
         let value = attrs.remove("value")
             .ok_or(report!(CONTEXT))
-            .attach_printable("Missing value attribute")?;
-
+            .attach_printable("Missing value attribute")?
+            .trim()
+            .to_string();
 
         let comment = attrs.remove("comment")
             .ok_or(report!(CONTEXT))
-            .attach_printable("Missing comment attribute")?;
+            .attach_printable("Missing comment attribute")?
+            .trim()
+            .to_string();
 
         for remaining in attrs.into_iter() {
             tracing::warn!("Ignoring unrecognized attribute {}=\"{}\"", remaining.0, remaining.1);

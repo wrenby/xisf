@@ -9,10 +9,10 @@ ndarray = "0.15.6"
 [package]
 name = "xisf-rs"
 description = "Decoder (eventually encoder) for the XISF astronomy image file format"
-categories = ["encoding", "parser-implementations", "multimedia::images", "science"]
+categories = ["parser-implementations", "multimedia::images", "science"]
 keywords = ["astronomy"]
 readme = "README.md"
-license = "LICENSE.md"
+license = "MIT"
 version = "0.0.1"
 edition = "2021"
 rust-version = "1.64.0"
