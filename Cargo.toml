@@ -2,7 +2,7 @@
 members = ["examples/to_fits"]
 
 [workspace.dependencies]
-error-stack = "0.3.1"
+error-stack = "0.4.0"
 tracing = { version = "0.1.37", default-features = false, features = ["std"] }
 ndarray = "0.15.6"
 
@@ -12,16 +12,17 @@ description = "Decoder (eventually encoder) for the XISF astronomy image file fo
 categories = ["parser-implementations", "multimedia::images", "science"]
 keywords = ["astronomy"]
 repository = "https://github.com/wrenby/xisf"
+documentation = "https://docs.rs/crate/xisf-rs/latest"
 readme = "README.md"
 license = "MIT"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 rust-version = "1.64.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-error-stack = "0.3.1"
+error-stack = "0.4.0"
 tracing = { version = "0.1.37", default-features = false, features = ["std"] }
 byteorder = "1.4.3"
 libxml = "0.3.3"
@@ -42,4 +43,4 @@ sha3 = "0.10.8"
 digest = "0.10.7"
 bytemuck = "1.13.1"
 ordered-multimap = "0.6.0"
-time = { version = "0.3.20", features = ["parsing"] }
+time = { version = "0.3.27", features = ["parsing"] }

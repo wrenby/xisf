@@ -1,4 +1,4 @@
-use error_stack::{Report, report, ResultExt, IntoReport};
+use error_stack::{Report, report, ResultExt};
 use libxml::readonly::RoNode;
 use num_complex::Complex;
 use time::{OffsetDateTime, format_description::well_known::Iso8601};
@@ -95,7 +95,7 @@ macro_rules! from_fits_str_real {
     ($t:ty) => {
         impl FromFitsStr for $t {
             fn from_fits_str(val: &str) -> Result<Self, Report<ParseValueError>> {
-                val.parse().into_report().change_context(ParseValueError(concat!("FITS key as ", stringify!($t))))
+                val.parse::<$t>().change_context(ParseValueError(concat!("FITS key as ", stringify!($t))))
             }
         }
     };
@@ -123,8 +123,8 @@ macro_rules! from_fits_str_complex {
                 if val.starts_with('(') && val.ends_with(')') {
                     if let Some((re, im)) = val[1..val.len()-1].split_once(',') {
                         Ok(Complex::<$t>::new(
-                            re.trim().parse().into_report().change_context(CONTEXT)?,
-                            im.trim().parse().into_report().change_context(CONTEXT)?,
+                            re.trim().parse::<$t>().change_context(CONTEXT)?,
+                            im.trim().parse::<$t>().change_context(CONTEXT)?,
                         ))
                     } else {
                         Err(report!(CONTEXT)).attach_printable("Missing comma")
@@ -156,7 +156,6 @@ impl FromFitsStr for OffsetDateTime {
         // TODO: large dates
         // TODO: make more rigorous (see [section 9.1.1](https://fits.gsfc.nasa.gov/standard40/fits_standard40aa-le.pdf#subsubsection.9.1.1) of the spec)
         OffsetDateTime::parse(val, &Iso8601::PARSING)
-            .into_report()
             .change_context(ParseValueError("FITS key as OffsetDateTime"))
     }
 }

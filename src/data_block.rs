@@ -10,7 +10,7 @@ use std::{
     str::FromStr,
 };
 
-use error_stack::{Report, IntoReport, ResultExt, report};
+use error_stack::{Report, ResultExt, report};
 use flate2::read::ZlibDecoder;
 use libxml::{readonly::RoNode, tree::NodeType, xpath::Context as XpathContext};
 use parse_int::parse as parse_auto_radix;
@@ -38,7 +38,6 @@ impl DataBlock {
             let byte_order = match attrs.remove("byteOrder") {
                 Some(byte_order) => {
                     byte_order.parse::<ByteOrder>()
-                        .into_report()
                         .change_context(context)
                         .attach_printable_lazy(|| format!("Invalid byteOrder attribute: expected one of [big, little], found {byte_order}"))?
                 },
@@ -116,7 +115,7 @@ impl DataBlock {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Location {
-    /// Inline or embedded: data is encoded in a child text or <Data> node
+    /// Inline or embedded: data is encoded in a child text or &lt;Data&gt; node
     Plaintext {
         encoding: TextEncoding,
         text: String, // stripped of all whitespace
@@ -149,7 +148,6 @@ impl Location {
             match attr.split(":").collect::<Vec<_>>().as_slice() {
                 &["inline", encoding] => {
                     let encoding = encoding.parse::<TextEncoding>()
-                        .into_report()
                         .change_context(context)
                         .attach_printable("Invalid location attribute: failed to parse inline encoding")?;
 
@@ -179,7 +177,6 @@ impl Location {
                         [one] => {
                             if let Some(encoding) = one.get_attribute("encoding") {
                                 let encoding = encoding.parse::<TextEncoding>()
-                                    .into_report()
                                     .change_context(context)
                                     .attach_printable("Invalid encoding attribute in embedded <Data> node")?;
 
@@ -207,11 +204,9 @@ impl Location {
                 &["attachment", position, size] => {
                     Ok(Some(Self::Attachment {
                         position: parse_auto_radix::<u64>(position.trim())
-                            .into_report()
                             .change_context(context)
                             .attach_printable("Invalid location attribute: failed to parse position of attached data block")?,
                         size: parse_auto_radix::<u64>(size.trim())
-                            .into_report()
                             .change_context(context)
                             .attach_printable("Invalid location attribute: failed to parse size of attached data block")?,
                     }))
@@ -222,7 +217,6 @@ impl Location {
                     Ok(Some(Self::Url {
                         // the slice indexing trims "url(" from the front and ")" from the end
                         url: Url::parse(&url[4..url.len()-1])
-                            .into_report()
                             .change_context(context)
                             .attach_printable("Invalid location attribute: failed to parse URL of external data block")?,
                         index_id: None,
@@ -234,11 +228,9 @@ impl Location {
                     Ok(Some(Self::Url {
                         // the slice indexing trims "url(" from the front and ")" from the end
                         url: Url::parse(&url[4..url.len()-1])
-                            .into_report()
                             .change_context(context)
                             .attach_printable("Invalid location attribute: failed to parse URL of external data block")?,
                         index_id: Some(parse_auto_radix::<u64>(index_id.trim())
-                            .into_report()
                             .change_context(context)
                             .attach_printable("Invalid location attribute: failed to parse index-id of external data block")?),
                     }))
@@ -259,7 +251,6 @@ impl Location {
                         // the slice indexing trims "path(" from the front and ")" from the end
                         path: PathBuf::from(&path[5..path.len()-1]),
                         index_id: Some(parse_auto_radix::<u64>(index_id.trim())
-                            .into_report()
                             .change_context(context)
                             .attach_printable("Invalid location attribute: failed to parse index-id of external data block")?),
                     }))
@@ -279,20 +270,16 @@ impl Location {
             Self::Plaintext { encoding, text } => {
                 let buf = match encoding {
                     TextEncoding::Hex => hex_simd::decode_to_vec(text)
-                        .into_report()
                         .change_context(ReadDataBlockError)?,
                     TextEncoding::Base64 => base64.decode_to_vec(text)
-                        .into_report()
                         .change_context(ReadDataBlockError)?,
                 };
                 Ok(Box::new(Cursor::new(buf)))
             },
             Self::Attachment { position, size } => {
                 let mut file = File::open(&xisf.filename)
-                    .into_report()
                     .change_context(ReadDataBlockError)?;
                 file.seek(io::SeekFrom::Start(*position))
-                    .into_report()
                     .change_context(ReadDataBlockError)?;
                 Ok(Box::new(BufReader::new(file).take(*size)))
             },
@@ -330,8 +317,7 @@ impl Location {
                                     lz4::Decoder::new(shared)
                                         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
                                 ))
-                            }).into_report()
-                            .change_context(ReadDataBlockError)
+                            }).change_context(ReadDataBlockError)
                             .attach_printable("Failed to initialize Lz4 decoder")?
                     ))
                 }
@@ -522,7 +508,6 @@ impl FromStr for Checksum {
             // but this is not true -- it returns an Err
             hex_simd::decode(digest.as_bytes(), out[..].as_out())
                 .map(|_| ())
-                .into_report()
                 .change_context(CONTEXT)
                 .attach_printable("Failed to decode checksum digest from hexadecimal")
         }
@@ -660,7 +645,6 @@ impl FromStr for CompressionAttr {
         const ITEM_SIZE_ERR: &'static str = "Failed to read byte shuffling item size";
         fn parse_size(size: &str, err_msg: &'static str) -> Result<usize, Report<ParseValueError>> {
             parse_auto_radix::<usize>(size.trim())
-                .into_report()
                 .change_context(CONTEXT)
                 .attach_printable(err_msg)
         }
@@ -729,11 +713,9 @@ impl FromStr for SubBlocks {
             if let Some((uncompressed_size, item_size)) = token.split_once(",") {
                 sub_blocks.push((
                     parse_auto_radix::<usize>(uncompressed_size.trim())
-                        .into_report()
                         .change_context(CONTEXT)?,
 
                     parse_auto_radix::<usize>(item_size.trim())
-                        .into_report()
                         .change_context(CONTEXT)?,
                 ));
             } else {
@@ -760,7 +742,6 @@ impl CompressionLevel {
             0 => Ok(Self::Auto),
             (1..=100) => Ok(Self::Value(NonZeroU8::new(level).unwrap())), // safe because the match arm range does not contain 0
             bad => Err(ParseValueError("CompressionLevel"))
-                .into_report()
                 .attach_printable(format!("Must be between 0 and 100, found {bad}"))
         }
     }

@@ -1,5 +1,5 @@
 use byteorder::{LittleEndian, ReadBytesExt};
-use error_stack::{IntoReport, Report, ResultExt, report};
+use error_stack::{Report, ResultExt, report};
 use libxml::{
     parser::Parser as XmlParser,
     readonly::RoNode,
@@ -28,7 +28,7 @@ pub mod metadata;
 pub struct ReadOptions {
     /// Read FITSKeyword headers from the XML header
     pub import_fits_keywords: bool,
-    /// Import FITSKeyword headers as XISF <Property> tags with the prefix FITS:
+    /// Import FITSKeyword headers as XISF &lt;Property&gt; tags with the prefix FITS:
     pub fits_keywords_as_properties: bool,
     /// Clamp all pixel samples to the range specified in the bounds attribute.
     /// For floating-point images: NaNs, infinities, and negative zeros are replaced with the lower bound
@@ -92,7 +92,6 @@ impl XISF {
         let _span_guard = tracing::debug_span!("read_file", filename = filename_str).entered();
 
         let f = File::open(filename.as_ref())
-            .into_report()
             .change_context(ReadFileError)
             .attach_printable_lazy(|| format!("Failed to open file {filename_str} for reading"))?;
         let mut reader = BufReader::new(f);
@@ -102,7 +101,6 @@ impl XISF {
         let mut signature_buf = [0u8; 8];
         reader
             .read_exact(&mut signature_buf)
-            .into_report()
             .change_context(ReadFileError)
             .attach_printable("Failed to read 8-byte field \"file format signature\" at start of file")?;
         if signature_buf != CORRECT_SIGNATURE {
@@ -113,7 +111,6 @@ impl XISF {
         // next 4 bytes are a little-endian encoded unsigned integer specifying the length of the XML header
         let header_length = reader
             .read_u32::<LittleEndian>()
-            .into_report()
             .change_context(ReadFileError)
             .attach_printable("Error parsing 4-byte field \"XML header length\" as little-endian u32")?;
         tracing::debug!("Header size: {} bytes", header_length);
@@ -121,7 +118,6 @@ impl XISF {
         const RESERVED_BYTES: i64 = 4;
         reader
             .seek_relative(RESERVED_BYTES)
-            .into_report()
             .change_context(ReadFileError)
             .attach_printable("Failed to skip 4 reserved bytes")?;
 
@@ -129,13 +125,11 @@ impl XISF {
         let mut header_buf = vec![0u8; header_length as usize];
         reader
             .read_exact(&mut header_buf)
-            .into_report()
             .change_context(ReadFileError)
             .attach_printable_lazy(|| format!("Failed to read {header_length}-byte XML header from file"))?;
 
         // parse the header
         let xml = XmlParser::default().parse_string(header_buf)
-            .into_report()
             .change_context(ReadFileError)
             .attach_printable("Failed to parse XML header")?;
 

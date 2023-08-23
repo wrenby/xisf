@@ -6,7 +6,7 @@ use std::{
 
 use byteorder::{ReadBytesExt, LE, BE};
 use digest::Digest;
-use error_stack::{IntoReport, Report, report, ResultExt};
+use error_stack::{Report, report, ResultExt};
 use libxml::{readonly::RoNode, xpath::Context as XpathContext};
 use ndarray::{ArrayD, IxDyn, Array2};
 use num_complex::Complex;
@@ -67,7 +67,6 @@ impl Image {
         if let Some(dims) = attrs.remove("geometry") {
             for i in dims.split(":") {
                 let dim = parse_auto_radix::<usize>(i.trim())
-                    .into_report()
                     .change_context(CONTEXT)
                     .attach_printable("Invalid geometry attribute: failed to parse dimension/channel count")
                     .attach_printable_lazy(|| format!("Expected pattern \"{{dim_1}}:...:{{dim_N}}:{{channel_count}}\" (for N>=1 and all values > 0), found \"{i}\""))?;
@@ -91,7 +90,6 @@ impl Image {
             .attach_printable("Missing sampleFormat attribute")
             .and_then(|val| {
                 val.parse::<SampleFormat>()
-                    .into_report()
                     .change_context(CONTEXT)
                     .attach_printable_lazy(||
                         format!("Invalid sampleFormat attribute: expected one of {:?}, found {val}", SampleFormat::VARIANTS))
@@ -104,11 +102,9 @@ impl Image {
 
             Some(SampleBounds {
                 low: low.trim().parse::<f64>()
-                    .into_report()
                     .change_context(CONTEXT)
                     .attach_printable("Invalid bounds attribute: failed to parse lower bound")?,
                 high: high.trim().parse::<f64>()
-                    .into_report()
                     .change_context(CONTEXT)
                     .attach_printable("Invalid bounds attribute: failed to parse upper bound")?
             })
@@ -121,7 +117,6 @@ impl Image {
 
         let image_type = if let Some(val) = attrs.remove("imageType") {
             Some(val.parse::<ImageType>()
-                .into_report()
                 .change_context(CONTEXT)
                 .attach_printable_lazy(||
                     format!("Invalid imageType attribute: expected one of {:?}, found {val}", ImageType::VARIANTS))?)
@@ -131,7 +126,6 @@ impl Image {
 
         let pixel_storage = if let Some(val) = attrs.remove("pixelStorage") {
             val.parse::<PixelStorage>()
-                .into_report()
                 .change_context(CONTEXT)
                 .attach_printable_lazy(||
                     format!("Invalid pixelStorage attribute: expected one of {:?}, found {val}", PixelStorage::VARIANTS)
@@ -142,7 +136,6 @@ impl Image {
 
         let color_space = if let Some(val) = attrs.remove("colorSpace") {
             val.parse::<ColorSpace>()
-                .into_report()
                 .change_context(CONTEXT)
                 .attach_printable_lazy(||
                     format!("Invalid colorSpace attribute: expected one of {:?}, found {val}", ColorSpace::VARIANTS)
@@ -153,7 +146,6 @@ impl Image {
 
         let offset = if let Some(val) = attrs.remove("offset") {
             let maybe_negative = val.parse::<f64>()
-                .into_report()
                 .change_context(CONTEXT)
                 .attach_printable("Invalid offset attribute")?;
             if maybe_negative < 0.0 {
@@ -194,7 +186,6 @@ impl Image {
 
         let uuid = if let Some(val) = attrs.remove("uuid") {
             Some(val.parse::<Uuid>()
-                .into_report()
                 .change_context(CONTEXT)
                 .attach_printable("Invalid uuid attribute")?)
         } else {
@@ -266,7 +257,6 @@ impl Image {
         fn verify_hash<D: Digest + Write>(expected: &[u8], reader: &mut dyn Read) -> Result<(), Report<ReadDataBlockError>> {
             let mut hasher = D::new();
             std::io::copy(reader, &mut hasher)
-                .into_report()
                 .change_context(ReadDataBlockError)
                 .attach_printable("Failed to calculate image hash")?;
             let actual = hasher.finalize();
@@ -307,7 +297,6 @@ impl Image {
                     // to unshuffle, call this same code block [n, item_size] instead of [item_size, n]
                     let mut buf = Array2::<u8>::zeros([n, item_size]);
                     reader.read_exact(buf.as_slice_memory_order_mut().unwrap())
-                        .into_report()
                         .change_context(ReadDataBlockError)
                         .attach_printable("Failed to read bytes into temporary buffer for unshuffling")?;
                     buf.swap_axes(0, 1);
@@ -367,7 +356,7 @@ impl Image {
                         match self.data_block.byte_order {
                             ByteOrder::Big => reader.read_f32_into::<BE>(bytemuck_slice),
                             ByteOrder::Little => reader.read_f32_into::<LE>(bytemuck_slice),
-                        }.into_report().change_context(ReadDataBlockError)?;
+                        }.change_context(ReadDataBlockError)?;
                     }
                     PixelStorage::Normal => {
                         let mut geometry = self.geometry.clone();
@@ -380,7 +369,7 @@ impl Image {
                         match self.data_block.byte_order {
                             ByteOrder::Big => reader.read_f32_into::<BE>(bytemuck_slice),
                             ByteOrder::Little => reader.read_f32_into::<LE>(bytemuck_slice),
-                        }.into_report().change_context(ReadDataBlockError)?;
+                        }.change_context(ReadDataBlockError)?;
                         // move the channel axis to the beginning instead of the end
                         // ! this is not reflected in the memory layout of the array
                         let mut axes: Vec<_> = (0..self.geometry.len()).into_iter().collect();
@@ -403,7 +392,7 @@ impl Image {
                         match self.data_block.byte_order {
                             ByteOrder::Big => reader.read_f64_into::<BE>(bytemuck_slice),
                             ByteOrder::Little => reader.read_f64_into::<LE>(bytemuck_slice),
-                        }.into_report().change_context(ReadDataBlockError)?;
+                        }.change_context(ReadDataBlockError)?;
                     }
                     PixelStorage::Normal => {
                         let mut geometry = self.geometry.clone();
@@ -416,7 +405,7 @@ impl Image {
                         match self.data_block.byte_order {
                             ByteOrder::Big => reader.read_f64_into::<BE>(bytemuck_slice),
                             ByteOrder::Little => reader.read_f64_into::<LE>(bytemuck_slice),
-                        }.into_report().change_context(ReadDataBlockError)?;
+                        }.change_context(ReadDataBlockError)?;
                         // move the channel axis to the beginning instead of the end
                         // ! this is not reflected in the memory layout of the array
                         let mut axes: Vec<_> = (0..self.geometry.len()).into_iter().collect();
@@ -447,7 +436,7 @@ impl Image {
                 match self.data_block.byte_order {
                     ByteOrder::Big => read_be(reader, buf_slice),
                     ByteOrder::Little => read_le(reader, buf_slice),
-                }.into_report().change_context(ReadDataBlockError)?;
+                }.change_context(ReadDataBlockError)?;
             }
             PixelStorage::Normal => {
                 let mut geometry = self.geometry.clone();
@@ -459,7 +448,7 @@ impl Image {
                 match self.data_block.byte_order {
                     ByteOrder::Big => read_be(reader, buf_slice),
                     ByteOrder::Little => read_le(reader, buf_slice),
-                }.into_report().change_context(ReadDataBlockError)?;
+                }.change_context(ReadDataBlockError)?;
                 // move the channel axis to the beginning instead of the end
                 // ! this is not reflected in the memory layout of the array
                 let mut axes: Vec<_> = (0..self.geometry.len()).into_iter().collect();
@@ -500,6 +489,11 @@ impl Image {
     /// which is typically appended each time the image is processed in some way
     pub fn fits_raw_keys(&self, name: impl AsRef<str>) -> impl Iterator<Item = &FitsKeyValue> {
         self.fits_header.get_all(name.as_ref())
+    }
+    /// Iterates through all FITS keys as (key, value+comment) tuples,
+    /// in the order they appear in file, returned as raw unparsed strings.
+    pub fn fits_all_raw_keys(&self) -> impl Iterator<Item = (&String, &FitsKeyValue)> {
+        self.fits_header.iter()
     }
 }
 
