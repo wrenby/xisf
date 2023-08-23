@@ -11,6 +11,7 @@ name = "xisf-rs"
 description = "Decoder (eventually encoder) for the XISF astronomy image file format"
 categories = ["parser-implementations", "multimedia::images", "science"]
 keywords = ["astronomy"]
+repository = "https://github.com/wrenby/xisf"
 readme = "README.md"
 license = "MIT"
 version = "0.0.1"
