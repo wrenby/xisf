@@ -1,6 +1,6 @@
 # xisf-rs
 
-[![Crates.io](https://img.shields.io/crates/d/xisf-rs)](https://crates.io/crates/xisf-rs)
+[![Crates.io](https://img.shields.io/crates/v/xisf-rs)](https://crates.io/crates/xisf-rs)
 ![Minimum rustc version](https://img.shields.io/badge/rustc-1.64+-lightgray.svg)
 ![License](https://img.shields.io/crates/l/xisf-rs.svg)
 
@@ -34,8 +34,7 @@ XML Digital Signature Verification | :x: | :x: | :x:
 ## Dependencies
 - Minimum Supported Rust Version (MSRV): 1.64.0, verified for `x86_64-unknown-linux-gnu`
 - libxml2
-- lz4
-<!-- Is the lz4 dependency static or dynamic? Static links would require the BSD-2-Clause license to be distributed with binary copies, I think -->
+- lz4 <!-- Is this dependency static or dynamic? Static links would require the BSD-2-Clause license to be distributed with binary copies, I think -->
 - Can be configured to use zlib or zlib-ng
 
 # Road Map
