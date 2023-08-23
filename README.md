@@ -13,16 +13,16 @@ An unaffiliated implementation of Pleiades Astrophoto's open-source Extensible I
 Language | Rust | C++ | C++
 License | MIT | GPLv3 | BSD-4-Clause-like
 Monolithic Files | Decode | Encode + Decode | Encode + Decode
-Distributed Files | :x: | :x: | :x:
-N-D Images | :white_check_mark: | [:x:](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816) | [:x:](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001)
+Distributed Files | ❌ | ❌ | ❌
+N-D Images | ✅ | [❌](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816) | [❌](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001)
 Pixel Sample Formats | Scalar, Complex | Agnostic (Raw Bytes Only) | Scalar<sup>1</sup>, Complex
 Image Metadata | Attributes, FITS Keywords | <details>Attributes<sup>2</sup>, FITS Keywords<sup>3</sup>, XISF Properties, Thumbnail, CFA, ICC Profile</details> | <details>Attributes<sup>4</sup>, FITS Keywords, XISF Properties, Thumbnail, CFA, ICC Profile, *RGB Working Space, Display Function, Resolution*</details>
-Supported XISF Property Locations | :x: | `<Image>`<sup>5</sup> | `<Image>`, `<Metadata>`, `<xisf>`
-`<Table>` Element | :x: | :x: | :x:
-`<Reference>` Element | :white_check_mark: | :x: | :x:
-Data Block Compression | <details><summary>:white_check_mark:</summary>`zlib`, `lz4`, `lz4hc`</details> | <details><summary>:white_check_mark:<sup>6</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>:white_check_mark:</summary>`zlib`, `lz4`, `lz4hc`</details>
-Checksum Verification | :white_check_mark: | :x: | :white_check_mark:
-XML Digital Signature Verification | :x: | :x: | :x:
+Supported XISF Property Locations | ❌ | `<Image>`<sup>5</sup> | `<Image>`, `<Metadata>`, `<xisf>`
+`<Table>` Element | ❌ | ❌ | ❌
+`<Reference>` Element | ✅ | ❌ | ❌
+Data Block Compression | <details><summary>✅</summary>`zlib`, `lz4`, `lz4hc`</details> | <details><summary>✅<sup>6</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>✅</summary>`zlib`, `lz4`, `lz4hc`</details>
+Checksum Verification | ✅ | ❌ | ✅
+XML Digital Signature Verification | ❌ | ❌ | ❌
 
 1. [Does not support 64-bit integers](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L599)
 2. [Only mandatory attributes and colorSpace](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L815)
