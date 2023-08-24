@@ -21,10 +21,12 @@ use crate::{
     data_block::{DataBlock, ByteOrder, Checksum},
     error::{ReadDataBlockError, ParseValueError, ReadFitsKeyError},
     is_valid_id,
-    metadata::{FitsKeyword, FromFitsStr, FitsKeyValue},
     ReadOptions,
     ParseNodeError, MaybeReference,
 };
+
+mod fits_keyword;
+pub use fits_keyword::*;
 
 #[non_exhaustive]
 #[derive(Clone, Debug)]
