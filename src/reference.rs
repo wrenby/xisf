@@ -4,7 +4,7 @@ use libxml::{readonly::RoNode, xpath::Context as XpathContext};
 use crate::error::ReferenceError;
 
 pub(crate) trait MaybeReference: Sized {
-    /// If this node is a reference,
+    /// If this node is a reference, returns the node it points to
     /// If this node is not a reference, this is a no-op
     fn follow_reference(self, xpath: &XpathContext) -> Result<Self, Report<ReferenceError>>;
 }
@@ -12,7 +12,7 @@ pub(crate) trait MaybeReference: Sized {
 impl MaybeReference for RoNode {
     fn follow_reference(self, xpath: &XpathContext) -> Result<RoNode, Report<ReferenceError>> {
         if self.get_name().as_str() == "Reference" {
-            let _span_guard = tracing::debug_span!("<Reference>").entered();
+            let _span_guard = tracing::debug_span!("Reference").entered();
             if let Some(target) = self.get_attribute("ref") {
                 if is_valid_id(target.as_str()) {
                     // acts as both validation and input sanitization for the xpath expression

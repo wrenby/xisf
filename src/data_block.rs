@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
-    io::{self, Read, BufReader, Seek, Cursor},
+    io::{self, Read, BufReader, Seek, Cursor, Write},
     fmt,
     fs::File,
     num::{NonZeroU8, NonZeroUsize},
@@ -10,13 +10,18 @@ use std::{
     str::FromStr,
 };
 
+use digest::Digest;
 use error_stack::{Report, ResultExt, report};
 use flate2::read::ZlibDecoder;
-use libxml::{readonly::RoNode, tree::NodeType, xpath::Context as XpathContext};
+use libxml::{readonly::RoNode, tree::NodeType};
+use ndarray::Array2;
 use parse_int::parse as parse_auto_radix;
+use sha1::Sha1;
+use sha2::{Sha256, Sha512};
+use sha3::{Sha3_256, Sha3_512};
 use strum::{EnumString, Display, EnumVariantNames};
 use url::Url;
-use crate::error::{ParseValueError, ParseNodeError, ReadDataBlockError};
+use crate::{error::{ParseValueError, ParseNodeError, ReadDataBlockError}, XISF};
 
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,9 +37,9 @@ impl DataBlock {
     // returns Err(_) if there was an error parsing the data block
     // passing &mut attrs isn't for the benefit of this function, but the caller function
     // (helps cut down on unnecessary "ignoring unrecognized attribute" warnings)
-    pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext, context: ParseNodeError, attrs: &mut HashMap<String, String>) -> Result<Option<Self>, Report<ParseNodeError>> {
+    pub(crate) fn parse_node(node: RoNode, context: ParseNodeError, attrs: &mut HashMap<String, String>) -> Result<Option<Self>, Report<ParseNodeError>> {
         let _span_guard = tracing::debug_span!("DataBlock");
-        if let Some(location) = Location::parse_node(node, xpath, context, attrs)? {
+        if let Some(location) = Location::parse_node(node, context, attrs)? {
             let byte_order = match attrs.remove("byteOrder") {
                 Some(byte_order) => {
                     byte_order.parse::<ByteOrder>()
@@ -111,6 +116,42 @@ impl DataBlock {
             Ok(None)
         }
     }
+
+    pub(crate) fn verify_checksum(&self, root: &XISF) -> Result<(), Report<ReadDataBlockError>> {
+        fn verify_checksum_impl<D: Digest + Write>(expected: &[u8], reader: &mut impl Read) -> Result<(), Report<ReadDataBlockError>> {
+            let mut hasher = D::new();
+            std::io::copy(reader, &mut hasher)
+                .change_context(ReadDataBlockError)
+                .attach_printable("Failed to calculate image hash")?;
+            let actual = hasher.finalize();
+            if actual.as_slice() == expected {
+                Ok(())
+            } else {
+                let actual = hex_simd::encode_to_string(actual.as_slice(), hex_simd::AsciiCase::Lower);
+                let expected = hex_simd::encode_to_string(expected, hex_simd::AsciiCase::Lower);
+                Err(report!(ReadDataBlockError))
+                    .attach_printable(format!("Data block failed checksum verification: expected {expected}, found {actual}"))
+            }
+        }
+
+        if let Some(checksum) = &self.checksum {
+            let mut reader = self.location.raw_bytes(&root)?;
+            match checksum {
+                Checksum::Sha1(digest) => verify_checksum_impl::<Sha1>(digest, &mut reader),
+                Checksum::Sha256(digest) => verify_checksum_impl::<Sha256>(digest, &mut reader),
+                Checksum::Sha512(digest) => verify_checksum_impl::<Sha512>(digest, &mut reader),
+                Checksum::Sha3_256(digest) => verify_checksum_impl::<Sha3_256>(digest, &mut reader),
+                Checksum::Sha3_512(digest) => verify_checksum_impl::<Sha3_512>(digest, &mut reader),
+            }
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Will duplicate in-memory if byte-shuffling is enabled
+    pub(crate) fn decompressed_bytes(&self, root: &XISF) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
+        self.location.decompressed_bytes(root, &self.compression)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -142,7 +183,7 @@ impl Location {
     /// returns Err(_) if there was an error parsing the data block location
     /// passing &mut attrs isn't for the benefit of this function, but the caller function
     /// (helps cut down on unnecessary "ignoring unrecognized attribute" warnings)
-    pub(crate) fn parse_node(node: RoNode, _xpath: &XpathContext, context: ParseNodeError, attrs: &mut HashMap<String, String>) -> Result<Option<Self>, Report<ParseNodeError>> {
+    pub(crate) fn parse_node(node: RoNode, context: ParseNodeError, attrs: &mut HashMap<String, String>) -> Result<Option<Self>, Report<ParseNodeError>> {
         let _span_guard = tracing::debug_span!("location");
         if let Some(attr) = attrs.remove("location") {
             match attr.split(":").collect::<Vec<_>>().as_slice() {
@@ -294,32 +335,68 @@ impl Location {
         }
     }
 
-    // ! if byte shuffling was enabled, this byte stream will still be shuffled
-    // - the concept for the data block read functions is a stream, and byte shuffling requires the whole file to be in memory
+    /// Will duplicate in-memory if byte-shuffling is enabled
     pub(crate) fn decompressed_bytes(&self, xisf: &crate::XISF, compression: &Option<Compression>) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
         let raw = self.raw_bytes(xisf)?;
         if let Some(compression) = compression {
             let uncompressed_sizes: Vec<_> = compression.sub_blocks.0.iter().map(|tup| tup.0).collect();
             match compression.algorithm {
                 CompressionAlgorithm::Zlib => {
-                    Ok(Box::new(
-                        raw.sub_blocks(&uncompressed_sizes[..])
-                            .map(|shared| {
-                                Ok(Box::new(ZlibDecoder::new(shared)))
-                            }).unwrap() // safe because the map function always succeeds, and that's the only point of failure
-                    ))
+                    let mut zlib = raw.sub_blocks(&uncompressed_sizes[..])
+                        .map(|shared| {
+                            Ok(ZlibDecoder::new(shared))
+                        }).unwrap(); // safe because the map function always succeeds, and that's the only point of failure
+
+                    match compression.byte_shuffling {
+                        // byte shuffling is a nop for 1 or 0 size items
+                        // not sure why any implementation would encode it like this, but best to save the clone I guess
+                        Some(item_size) if usize::from(item_size) > 1 => {
+                            let item_size: usize = item_size.into();
+                            let n = compression.uncompressed_size() / item_size;
+                            if n * item_size != compression.uncompressed_size() {
+                                return Err(report!(ReadDataBlockError)).attach_printable("Uncompressed size is not divisible by item size")
+                            }
+                            // to unshuffle, call this same code block [n, item_size] instead of [item_size, n]
+                            let mut buf = Array2::<u8>::zeros([n, item_size]);
+                            zlib.read_exact(buf.as_slice_memory_order_mut().unwrap())
+                                .change_context(ReadDataBlockError)
+                                .attach_printable("Failed to read bytes into temporary buffer for unshuffling")?;
+                            buf.swap_axes(0, 1);
+                            Ok(Box::new(Cursor::new(buf.as_standard_layout().to_owned().into_raw_vec())))
+                        },
+                        _ => Ok(Box::new(zlib))
+                    }
+
                 },
                 CompressionAlgorithm::Lz4 | CompressionAlgorithm::Lz4HC => {
-                    Ok(Box::new(
-                        raw.sub_blocks(&uncompressed_sizes[..])
-                            .map(|shared| {
-                                Ok(Box::new(
-                                    lz4::Decoder::new(shared)
-                                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-                                ))
-                            }).change_context(ReadDataBlockError)
-                            .attach_printable("Failed to initialize Lz4 decoder")?
-                    ))
+                    let mut lz4 = raw.sub_blocks(&uncompressed_sizes[..])
+                        .map(|shared| {
+                            Ok(
+                                lz4::Decoder::new(shared)
+                                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+                            )
+                        }).change_context(ReadDataBlockError)
+                        .attach_printable("Failed to initialize Lz4 decoder")?;
+
+                    match compression.byte_shuffling {
+                        // byte shuffling is a nop for 1 or 0 size items
+                        // not sure why any implementation would encode it like this, but best to save the clone I guess
+                        Some(item_size) if usize::from(item_size) > 1 => {
+                            let item_size: usize = item_size.into();
+                            let n = compression.uncompressed_size() / item_size;
+                            if n * item_size != compression.uncompressed_size() {
+                                return Err(report!(ReadDataBlockError)).attach_printable("Uncompressed size is not divisible by item size")
+                            }
+                            // to unshuffle, call this same code block [n, item_size] instead of [item_size, n]
+                            let mut buf = Array2::<u8>::zeros([n, item_size]);
+                            lz4.read_exact(buf.as_slice_memory_order_mut().unwrap())
+                                .change_context(ReadDataBlockError)
+                                .attach_printable("Failed to read bytes into temporary buffer for unshuffling")?;
+                            buf.swap_axes(0, 1);
+                            Ok(Box::new(Cursor::new(buf.as_standard_layout().to_owned().into_raw_vec())))
+                        },
+                        _ => Ok(Box::new(lz4))
+                    }
                 }
             }
         } else {
@@ -363,8 +440,9 @@ impl<R: Read> ReadSubBlocks<R> {
     }
 
     /// Initializes the
-    pub fn map<F>(self, f: F) -> io::Result<MapSubBlocks<F, R>>
-        where F: Fn(SharedReader<R>) -> io::Result<Box<dyn Read>> {
+    pub fn map<F, T>(self, f: F) -> io::Result<MapSubBlocks<F, R, T>>
+        where F: Fn(SharedReader<R>) -> io::Result<T>,
+        T: Read + Sized {
         MapSubBlocks::new(self, f)
     }
 
@@ -396,13 +474,13 @@ impl<R: Read> Read for SharedReader<R> {
         lock.read(buf)
     }
 }
-struct MapSubBlocks<F, R> {
+struct MapSubBlocks<F, R, T> {
     sub_blocks: ReadSubBlocks<R>,
     map_func: Box<F>,
-    current: Box<dyn Read>,
+    current: T,
 }
-impl<F, R> Read for MapSubBlocks<F, R>
-    where F: Fn(SharedReader<R>) -> io::Result<Box<dyn Read>>, R: Read {
+impl<F, R, T> Read for MapSubBlocks<F, R, T>
+    where F: Fn(SharedReader<R>) -> io::Result<T>, R: Read, T: Read + Sized {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let mut total_bytes_read = 0;
         let size = self.sub_blocks.current_limit();
@@ -421,8 +499,8 @@ impl<F, R> Read for MapSubBlocks<F, R>
         Ok(total_bytes_read)
     }
 }
-impl<F, R> MapSubBlocks<F, R>
-where F: Fn(SharedReader<R>) -> io::Result<Box<dyn Read>>, R: Read {
+impl<F, R, T> MapSubBlocks<F, R, T>
+where F: Fn(SharedReader<R>) -> io::Result<T>, R: Read, T: Read + Sized {
     pub fn new(sub_blocks: ReadSubBlocks<R>, f: F) -> io::Result<Self> {
         let current = f(sub_blocks.inner.clone())?;
         Ok(Self {

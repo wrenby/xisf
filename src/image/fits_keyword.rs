@@ -13,7 +13,7 @@ pub(crate) struct FitsKeyword {
 }
 impl FitsKeyword {
     pub(crate) fn parse_node(node: RoNode) -> Result<Self, Report<ParseNodeError>> {
-        let _span_guard = tracing::debug_span!("<FITSKeyword>").entered();
+        let _span_guard = tracing::debug_span!("FITSKeyword").entered();
         const CONTEXT: ParseNodeError = ParseNodeError("FITSKeyword");
         let mut attrs = node.get_attributes();
 

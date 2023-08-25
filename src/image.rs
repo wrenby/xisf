@@ -1,24 +1,20 @@
 use std::{
-    io::{Read, Write, Cursor},
+    io::Read,
     fmt,
     str::FromStr
 };
 
 use byteorder::{ReadBytesExt, LE, BE};
-use digest::Digest;
 use error_stack::{Report, report, ResultExt};
 use libxml::{readonly::RoNode, xpath::Context as XpathContext};
-use ndarray::{ArrayD, IxDyn, Array2};
+use ndarray::{ArrayD, IxDyn};
 use num_complex::Complex;
 use ordered_multimap::ListOrderedMultimap;
 use parse_int::parse as parse_auto_radix;
-use sha1::Sha1;
-use sha2::{Sha256, Sha512};
-use sha3::{Sha3_256, Sha3_512};
 use strum::{Display, EnumString, EnumVariantNames, VariantNames};
 use uuid::Uuid;
 use crate::{
-    data_block::{DataBlock, ByteOrder, Checksum},
+    data_block::{DataBlock, ByteOrder},
     error::{ReadDataBlockError, ParseValueError, ReadFitsKeyError},
     is_valid_id,
     ReadOptions,
@@ -28,12 +24,14 @@ use crate::{
 mod fits_keyword;
 pub use fits_keyword::*;
 
-#[non_exhaustive]
+mod icc_profile;
+pub use icc_profile::*;
+
 #[derive(Clone, Debug)]
 pub struct Image {
     pub uid: Option<String>,
 
-    pub data_block: DataBlock,
+    data_block: DataBlock,
     pub geometry: Vec<usize>,
     pub sample_format: SampleFormat,
 
@@ -47,13 +45,14 @@ pub struct Image {
     pub id: Option<String>,
     pub uuid: Option<Uuid>,
 
-    pub fits_header: ListOrderedMultimap<String, FitsKeyValue>,
+    fits_header: ListOrderedMultimap<String, FitsKeyValue>,
+    icc_profile: Option<ICCProfile>,
 }
 
 impl Image {
     pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext, opts: &ReadOptions) -> Result<Self, Report<ParseNodeError>> {
         const CONTEXT: ParseNodeError = ParseNodeError("Image");
-        let _span_guard = tracing::debug_span!("<Image>").entered();
+        let _span_guard = tracing::debug_span!("Image").entered();
 
         // * this is mutable because we use .remove() instead of .get()
         // that way, after we've extracted everything we recognize,
@@ -61,9 +60,9 @@ impl Image {
         // saying we don't know what so-and-so attribute means
         let mut attrs = node.get_attributes();
 
-        let data_block = DataBlock::parse_node(node, xpath, CONTEXT, &mut attrs)?
+        let data_block = DataBlock::parse_node(node, CONTEXT, &mut attrs)?
             .ok_or(report!(CONTEXT))
-            .attach_printable("Missing location attribute: <Image> nodes must have a data block")?;
+            .attach_printable("Missing location attribute: Image elements must have a data block")?;
 
         let mut geometry: Vec<usize> = vec![];
         if let Some(dims) = attrs.remove("geometry") {
@@ -199,6 +198,7 @@ impl Image {
         }
 
         let mut fits_header = ListOrderedMultimap::<String, FitsKeyValue>::new();
+        let mut icc_profile = None;
 
         // TODO: ignore text/<Data> children of nodes with inline or embedded blocks, respectively
         for mut child in node.get_child_nodes() {
@@ -208,7 +208,14 @@ impl Image {
                     let key = FitsKeyword::parse_node(child).change_context(CONTEXT)?;
                     let val_comm = FitsKeyValue { value: key.value, comment: key.comment };
                     fits_header.append(key.name, val_comm);
-                }, bad => tracing::warn!("Ignoring unrecognized child node <{}>", bad),
+                },
+                "ICCProfile" => {
+                    let icc = ICCProfile::parse_node(child).change_context(CONTEXT)?;
+                    if icc_profile.replace(icc).is_some() {
+                        tracing::warn!("Duplicate ICCProfile element found -- discarding the previous profile");
+                    }
+                }
+                bad => tracing::warn!("Ignoring unrecognized child node <{}>", bad),
             }
         }
 
@@ -229,6 +236,7 @@ impl Image {
             uuid,
 
             fits_header,
+            icc_profile,
         })
     }
 
@@ -256,57 +264,8 @@ impl Image {
     // ! if you need contiguous data, i.e. for interoperability, call `.as_standard_layout()` on the array before accessing the slice
     // ! be warned that `.as_standard_layout()` clones the entire memory block if it isn't a no-op
     pub fn read_data(&self, root: &crate::XISF) -> Result<ImageData, Report<ReadDataBlockError>> {
-        fn verify_hash<D: Digest + Write>(expected: &[u8], reader: &mut dyn Read) -> Result<(), Report<ReadDataBlockError>> {
-            let mut hasher = D::new();
-            std::io::copy(reader, &mut hasher)
-                .change_context(ReadDataBlockError)
-                .attach_printable("Failed to calculate image hash")?;
-            let actual = hasher.finalize();
-            if actual.as_slice() == expected {
-                Ok(())
-            } else {
-                let actual = hex_simd::encode_to_string(actual.as_slice(), hex_simd::AsciiCase::Lower);
-                let expected = hex_simd::encode_to_string(expected, hex_simd::AsciiCase::Lower);
-                Err(report!(ReadDataBlockError))
-                    .attach_printable(format!("Data block failed checksum verification: expected {expected}, found {actual}"))
-            }
-        }
-
-        // read through the block twice, once to verify the checksum on the compressed bytes, and then again to read the decompressed bytes
-        let mut reader = self.data_block.location.raw_bytes(&root)?;
-        if let Some(checksum) = &self.data_block.checksum {
-            match checksum {
-                Checksum::Sha1(digest) => verify_hash::<Sha1>(digest, &mut reader)?,
-                Checksum::Sha256(digest) => verify_hash::<Sha256>(digest, &mut reader)?,
-                Checksum::Sha512(digest) => verify_hash::<Sha512>(digest, &mut reader)?,
-                Checksum::Sha3_256(digest) => verify_hash::<Sha3_256>(digest, &mut reader)?,
-                Checksum::Sha3_512(digest) => verify_hash::<Sha3_512>(digest, &mut reader)?,
-            }
-            reader = self.data_block.location.decompressed_bytes(&root, &self.data_block.compression)?;
-        }
-
-        match &self.data_block.compression {
-            Some(compression) if compression.byte_shuffling.is_some() => {
-                // unwrap is safe because we just checked is_some()
-                let item_size = compression.byte_shuffling.unwrap().into();
-                // byte shuffling is a nop for 1 or 0 size items
-                // not sure why any implementation would encode it like this, but best to save the clone I guess
-                if item_size > 1 {
-                    let n = compression.uncompressed_size() / item_size;
-                    if n * item_size != compression.uncompressed_size() {
-                        return Err(report!(ReadDataBlockError)).attach_printable("Uncompressed size is not divisible by item size")
-                    }
-                    // to unshuffle, call this same code block [n, item_size] instead of [item_size, n]
-                    let mut buf = Array2::<u8>::zeros([n, item_size]);
-                    reader.read_exact(buf.as_slice_memory_order_mut().unwrap())
-                        .change_context(ReadDataBlockError)
-                        .attach_printable("Failed to read bytes into temporary buffer for unshuffling")?;
-                    buf.swap_axes(0, 1);
-                    reader = Box::new(Cursor::new(buf.as_standard_layout().to_owned().into_raw_vec()));
-                }
-            }
-            _ => (),
-        }
+        self.data_block.verify_checksum(root)?;
+        let mut reader = self.data_block.decompressed_bytes(root)?;
 
         match self.sample_format {
             SampleFormat::UInt8 => Ok(ImageData::UInt8(
@@ -462,7 +421,7 @@ impl Image {
     }
 
     /// Returns true iff the given FITS key is present in the header
-    pub fn fits_key_is_present(&self, name: impl AsRef<str>) -> bool {
+    pub fn fits_contains_key(&self, name: impl AsRef<str>) -> bool {
         self.fits_header.get(name.as_ref()).is_some()
     }
     /// Attempts to parse a FITS key with the given name as type `T`, following the syntax laid out in
@@ -497,9 +456,15 @@ impl Image {
     pub fn fits_all_raw_keys(&self) -> impl Iterator<Item = (&String, &FitsKeyValue)> {
         self.fits_header.iter()
     }
+
+    /// Returns a reference to the embedded ICC profile, if one exists.
+    /// If the returned value is `Some`, obtain the profile data by calling `read_data()` on the contained value.
+    /// Note: `read_data()` just returns a `Vec<u8>`; consider the `lcms2` crate if you need to actually decode it.
+    pub fn icc_profile(&self) -> &Option<ICCProfile> {
+        &self.icc_profile
+    }
 }
 
-///
 #[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum SampleFormat {
     UInt8,
