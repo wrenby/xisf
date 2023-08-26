@@ -17,7 +17,7 @@ Monolithic Files | Decode | Encode + Decode | Encode + Decode
 Distributed Files | ❌ | ❌ | ❌
 N-D Images | ✅ | [❌](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816) | [❌](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001)
 Pixel Sample Formats | Scalar, Complex | Agnostic (Raw Bytes Only) | Scalar<sup>1</sup>, Complex
-Image Metadata | <details>Attributes, FITS Keywords, ICC Profile, RGB Working Space</details> | <details>Attributes<sup>2</sup>, FITS Keywords<sup>3</sup>, XISF Properties, Thumbnail, CFA, ICC Profile</details> | <details>Attributes<sup>4</sup>, FITS Keywords, XISF Properties, Thumbnail, CFA, ICC Profile, RGB Working Space, Display Function, Resolution</details>
+Image Metadata | <details>Attributes, FITS Keywords, ICC Profile, RGB Working Space, Display Function</details> | <details>Attributes<sup>2</sup>, FITS Keywords<sup>3</sup>, XISF Properties, Thumbnail, CFA, ICC Profile</details> | <details>Attributes<sup>4</sup>, FITS Keywords, XISF Properties, Thumbnail, CFA, ICC Profile, RGB Working Space, Display Function, Resolution</details>
 Supported XISF Property Locations | ❌ | `<Image>`<sup>5</sup> | `<Image>`, `<Metadata>`, `<xisf>`
 `<Table>` Element | ❌ | ❌ | ❌
 `<Reference>` Element | ✅ | ❌ | ❌

@@ -203,6 +203,5 @@ mod tests {
         assert_eq!(rgbws.luminance, [0.333333, 0.333333, 0.333333]);
         assert_eq!(rgbws.transfer_function, TransferFunction::Gamma(1.0));
         assert_eq!(rgbws.name.as_deref(), Some("Uniform Linear with sRGB Primaries"));
-
     }
 }

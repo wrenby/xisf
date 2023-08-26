@@ -30,6 +30,9 @@ pub use icc_profile::*;
 mod rgb_working_space;
 pub use rgb_working_space::*;
 
+mod display_function;
+pub use display_function::*;
+
 #[derive(Clone, Debug)]
 pub struct Image {
     data_block: DataBlock,
@@ -49,6 +52,7 @@ pub struct Image {
     fits_header: ListOrderedMultimap<String, FitsKeyValue>,
     icc_profile: Option<ICCProfile>,
     rgb_working_space: Option<RGBWorkingSpace>,
+    display_function: Option<DisplayFunction>,
 }
 
 impl Image {
@@ -192,28 +196,32 @@ impl Image {
         let mut fits_header = ListOrderedMultimap::<String, FitsKeyValue>::new();
         let mut icc_profile = None;
         let mut rgb_working_space = None;
+        let mut display_function = None;
 
         // TODO: ignore text/<Data> children of nodes with inline or embedded blocks, respectively
         for mut child in node.get_child_nodes() {
             child = child.follow_reference(xpath).change_context(CONTEXT)?;
+
+            macro_rules! parse_optional {
+                ($t:ty, $opt_out:ident) => {
+                    {
+                        let parsed = <$t>::parse_node(child).change_context(CONTEXT)?;
+                        if $opt_out.replace(parsed).is_some() {
+                            tracing::warn!(concat!("Duplicate ", stringify!($t), " element found -- discarding the previous one"));
+                        }
+                    }
+                }
+            }
+
             match child.get_name().as_str() {
                 "FITSKeyword" if opts.import_fits_keywords => {
                     let key = FitsKeyword::parse_node(child).change_context(CONTEXT)?;
                     let val_comm = FitsKeyValue { value: key.value, comment: key.comment };
                     fits_header.append(key.name, val_comm);
                 },
-                "ICCProfile" => {
-                    let icc = ICCProfile::parse_node(child).change_context(CONTEXT)?;
-                    if icc_profile.replace(icc).is_some() {
-                        tracing::warn!("Duplicate ICCProfile element found -- discarding the previous one");
-                    }
-                },
-                "RGBWorkingSpace" => {
-                    let rgbws = RGBWorkingSpace::parse_node(child).change_context(CONTEXT)?;
-                    if rgb_working_space.replace(rgbws).is_some() {
-                        tracing::warn!("Duplicate RGBWorkingSpace element found -- discarding the previous one")
-                    }
-                }
+                "ICCProfile" => parse_optional!(ICCProfile, icc_profile),
+                "RGBWorkingSpace" => parse_optional!(RGBWorkingSpace, rgb_working_space),
+                "DisplayFunction" => parse_optional!(DisplayFunction, display_function),
                 bad => tracing::warn!("Ignoring unrecognized child node <{}>", bad),
             }
         }
@@ -235,6 +243,7 @@ impl Image {
             fits_header,
             icc_profile,
             rgb_working_space,
+            display_function,
         })
     }
 
@@ -464,6 +473,10 @@ impl Image {
 
     pub fn rgb_working_space(&self) -> &Option<RGBWorkingSpace> {
         &self.rgb_working_space
+    }
+
+    pub fn display_function(&self) -> &Option<DisplayFunction> {
+        &self.display_function
     }
 }
 
