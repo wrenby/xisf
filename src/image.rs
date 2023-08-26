@@ -27,15 +27,16 @@ pub use fits_keyword::*;
 mod icc_profile;
 pub use icc_profile::*;
 
+mod rgb_working_space;
+pub use rgb_working_space::*;
+
 #[derive(Clone, Debug)]
 pub struct Image {
-    pub uid: Option<String>,
-
     data_block: DataBlock,
     pub geometry: Vec<usize>,
     pub sample_format: SampleFormat,
 
-    // for images in a non-RGB color space, these bounds apply to pixel sample values once converted to RGB, not in its native color space
+    /// For images in a non-RGB color space, these bounds apply to pixel sample values once converted to RGB, not in its native color space
     pub bounds: Option<SampleBounds>,
     pub image_type: Option<ImageType>,
     pub pixel_storage: PixelStorage,
@@ -47,6 +48,7 @@ pub struct Image {
 
     fits_header: ListOrderedMultimap<String, FitsKeyValue>,
     icc_profile: Option<ICCProfile>,
+    rgb_working_space: Option<RGBWorkingSpace>,
 }
 
 impl Image {
@@ -166,16 +168,6 @@ impl Image {
             Default::default()
         };
 
-        let uid = attrs.remove("uid");
-        if let Some(uid) = &uid {
-            if is_valid_id(uid) {
-                return Err(report!(CONTEXT)).attach_printable(
-                    format!("Invalid uid attribute: must match regex [_a-zA-Z][_a-zA-Z0-9]*, found \"{uid}\"")
-                )
-            }
-            // TODO: verify uid uniqueness
-        }
-
         let id = attrs.remove("id");
         if let Some(id) = &id {
             if !is_valid_id(id) {
@@ -199,6 +191,7 @@ impl Image {
 
         let mut fits_header = ListOrderedMultimap::<String, FitsKeyValue>::new();
         let mut icc_profile = None;
+        let mut rgb_working_space = None;
 
         // TODO: ignore text/<Data> children of nodes with inline or embedded blocks, respectively
         for mut child in node.get_child_nodes() {
@@ -212,7 +205,13 @@ impl Image {
                 "ICCProfile" => {
                     let icc = ICCProfile::parse_node(child).change_context(CONTEXT)?;
                     if icc_profile.replace(icc).is_some() {
-                        tracing::warn!("Duplicate ICCProfile element found -- discarding the previous profile");
+                        tracing::warn!("Duplicate ICCProfile element found -- discarding the previous one");
+                    }
+                },
+                "RGBWorkingSpace" => {
+                    let rgbws = RGBWorkingSpace::parse_node(child).change_context(CONTEXT)?;
+                    if rgb_working_space.replace(rgbws).is_some() {
+                        tracing::warn!("Duplicate RGBWorkingSpace element found -- discarding the previous one")
                     }
                 }
                 bad => tracing::warn!("Ignoring unrecognized child node <{}>", bad),
@@ -220,8 +219,6 @@ impl Image {
         }
 
         Ok(Image {
-            uid,
-
             data_block,
             geometry: geometry.into_iter().rev().collect(), // swap to row-major order
             sample_format,
@@ -237,6 +234,7 @@ impl Image {
 
             fits_header,
             icc_profile,
+            rgb_working_space,
         })
     }
 
@@ -463,6 +461,10 @@ impl Image {
     pub fn icc_profile(&self) -> &Option<ICCProfile> {
         &self.icc_profile
     }
+
+    pub fn rgb_working_space(&self) -> &Option<RGBWorkingSpace> {
+        &self.rgb_working_space
+    }
 }
 
 #[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
@@ -485,6 +487,8 @@ impl SampleFormat {
     }
 }
 
+/// Sets the minimum and maximum value of a channel sample
+// TODO: I think this is just used for display purposes and doesn't actually clamp input? should add that to the doc if so
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SampleBounds {
     pub low: f64,
@@ -592,9 +596,13 @@ impl FromStr for Orientation {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Rotation {
     #[default]
+    /// No rotation
     None,
+    /// A 90 degree clockwise rotation
     Cw90,
+    /// A 90 degree counterclockwise rotation
     Ccw90,
+    /// A 180 degree rotation
     _180,
 }
 impl Rotation {
