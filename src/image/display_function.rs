@@ -7,13 +7,16 @@ use crate::error::ParseNodeError;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct HistogramTransformation {
-    pub midtones_balance: f32,
-    pub shadows_clip: f32,
-    pub highlights_clip: f32,
-    pub shadows_expansion: f32,
-    pub highlights_expansion: f32,
+    midtones_balance: f64,
+    shadows_clip: f64,
+    highlights_clip: f64,
+    shadows_expansion: f64,
+    highlights_expansion: f64,
+
+    clip_delta: f64,
+    expand_delta: f64,
 }
-/// Identity transformation
+/// [Identity transformation](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#__equation_23__)
 impl Default for HistogramTransformation {
     fn default() -> Self {
         Self {
@@ -22,34 +25,119 @@ impl Default for HistogramTransformation {
             highlights_clip: 1.0,
             shadows_expansion: 0.0,
             highlights_expansion: 1.0,
+            clip_delta: 1.0,
+            expand_delta: 1.0,
         }
     }
 }
 impl HistogramTransformation {
-    pub fn new(m: f32, s: f32, h: f32, l: f32, r: f32) -> Self {
-        Self {
-            midtones_balance: m,
-            shadows_clip: s,
-            highlights_clip: h,
-            shadows_expansion: l,
-            highlights_expansion: r,
+    /// Parameters:
+    /// - `m`: midtones balance, clamped to the range [0, 1]
+    /// - `s`: shadows clipping point, clamped to the range [0, 1]
+    /// - `h`: highlights clipping point, clamped to the range [0, 1]
+    /// - `l`: shadows dynamic range expansion, clamped to 0 or below
+    /// - `r`: highlights dynamic range expansion, clamped to 1 or above
+    ///
+    /// If `s` is greater than `h`, the two are swapped
+    pub fn new(m: f64, mut s: f64, mut h: f64, l: f64, r: f64) -> Self {
+        if s > h {
+            std::mem::swap(&mut s, &mut h);
         }
+        let shadows_clip = s.clamp(0.0, 1.0);
+        let highlights_clip = h.clamp(0.0, 1.0);
+        let shadows_expansion = l.min(0.0);
+        let highlights_expansion = r.max(1.0);
+        Self {
+            midtones_balance: m.clamp(0.0, 1.0),
+            shadows_clip,
+            highlights_clip,
+            shadows_expansion,
+            highlights_expansion,
+            clip_delta: highlights_clip - shadows_clip,
+            expand_delta: highlights_expansion - shadows_expansion,
+        }
+    }
+
+    pub fn mb(&self) -> f64 {
+        self.midtones_balance
+    }
+
+    pub fn sc(&self) -> f64 {
+        self.shadows_clip
+    }
+
+    pub fn hc(&self) -> f64 {
+        self.highlights_clip
+    }
+
+    pub fn se(&self) -> f64 {
+        self.shadows_expansion
+    }
+
+    pub fn he(&self) -> f64 {
+        self.highlights_expansion
+    }
+
+    // pub fn make_8bit_lut(&self)
+    // pub fn make_16bit_lut(&self)
+    // pub fn make_20bit_lut(&self)
+    // pub fn make_24bit_lut(&self)
+
+    /// [Midtones transfer function](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#__equation_19__)
+    #[inline]
+    fn mtf(&self, x: f64) -> f64 {
+        if x > 0.0 {
+            if x < 1.0 {
+                let m1 = self.mb() - 1.0;
+                m1 * x / ((self.mb() + m1) * x - self.mb())
+            } else {
+                1.0
+            }
+        } else {
+            0.0
+        }
+    }
+
+    /// [Clipping function](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#__equation_20__)
+    #[inline]
+    fn clip(&self, x: f64) -> f64 {
+        if x < self.sc() {
+            0.0
+        } else if x > self.hc() {
+            1.0
+        } else if self.clip_delta == 0.0 {
+            self.sc()
+        } else {
+            (x - self.sc()) / self.clip_delta
+        }
+    }
+
+    /// [Expansion function](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#__equation_21__)
+    #[inline]
+    fn expand(&self, x: f64) -> f64 {
+        (x - self.se()) / self.expand_delta
+    }
+
+    /// [Display function](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#__equation_22__)
+    #[inline]
+    pub fn apply(&self, x: f64) -> f64 {
+        self.expand(self.mtf(self.clip(x)))
     }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct DisplayFunction {
     pub name: Option<String>,
-    /// Histogram transform functions for red/gray, green, blue, and CIE L\*a\*b\* luminance, respectively
-    pub rkgbl: [HistogramTransformation; 4],
+    /// Histogram transform functions for red/gray, green, blue, and ... honestly I don't understand the fourth one, respectively
+    pub rgbl: [HistogramTransformation; 4],
 }
 /// == implementation ignores the name
 impl PartialEq for DisplayFunction {
     fn eq(&self, other: &Self) -> bool {
-        self.rkgbl == other.rkgbl
+        self.rgbl == other.rgbl
     }
     fn ne(&self, other: &Self) -> bool {
-        self.rkgbl != other.rkgbl
+        self.rgbl != other.rgbl
     }
 }
 impl DisplayFunction {
@@ -61,20 +149,20 @@ impl DisplayFunction {
 
         let name = attrs.remove("name");
 
-        fn parse_rkgbl(attr: &str, attrs: &mut HashMap<String, String>) -> Result<[f32; 4], Report<ParseNodeError>> {
+        fn parse_rkgbl(attr: &str, attrs: &mut HashMap<String, String>) -> Result<[f64; 4], Report<ParseNodeError>> {
             if let Some(val) = attrs.remove(attr) {
                 match val.split(":").collect::<Vec<_>>().as_slice() {
                     &[rk, g, b, l] => Ok([
-                        rk.trim().parse::<f32>()
+                        rk.trim().parse::<f64>()
                             .change_context(CONTEXT)
                             .attach_printable_lazy(|| format!("Invalid {attr} attribute: failed to parse red/grayscale value"))?,
-                        g.trim().parse::<f32>()
+                        g.trim().parse::<f64>()
                             .change_context(CONTEXT)
                             .attach_printable_lazy(|| format!("Invalid {attr} attribute: failed to parse green value"))?,
-                        b.trim().parse::<f32>()
+                        b.trim().parse::<f64>()
                             .change_context(CONTEXT)
                             .attach_printable_lazy(|| format!("Invalid {attr} attribute: failed to parse blue value"))?,
-                        l.trim().parse::<f32>()
+                        l.trim().parse::<f64>()
                             .change_context(CONTEXT)
                             .attach_printable_lazy(|| format!("Invalid {attr} attribute: failed to parse luminance value"))?,
                     ]),
@@ -102,21 +190,29 @@ impl DisplayFunction {
 
         Ok(Self {
             name,
-            rkgbl: [rk, g, b, l],
+            rgbl: [rk, g, b, l],
         })
     }
 
-    pub fn rk(&self) -> &HistogramTransformation {
-        &self.rkgbl[0]
+    #[inline]
+    pub fn r(&self) -> &HistogramTransformation {
+        &self.rgbl[0]
     }
+    #[inline]
+    pub fn k(&self) -> &HistogramTransformation {
+        &self.rgbl[0]
+    }
+    #[inline]
     pub fn g(&self) -> &HistogramTransformation {
-        &self.rkgbl[1]
+        &self.rgbl[1]
     }
+    #[inline]
     pub fn b(&self) -> &HistogramTransformation {
-        &self.rkgbl[2]
+        &self.rgbl[2]
     }
+    #[inline]
     pub fn l(&self) -> &HistogramTransformation {
-        &self.rkgbl[3]
+        &self.rgbl[3]
     }
 }
 
@@ -127,7 +223,7 @@ mod tests {
 
     #[test]
     fn parse_node() {
-        // examples from the XISF spec
+        // example from the XISF spec
         let auto_stretch = r#"<DisplayFunction m="0.000735:0.000735:0.000735:0.5"
             s="0.003758:0.003758:0.003758:0"
             h="1:1:1:1"
@@ -137,13 +233,29 @@ mod tests {
 
         let xml = Parser::default().parse_string(auto_stretch.as_bytes()).unwrap();
         let df = DisplayFunction::parse_node(xml.get_root_readonly().unwrap());
-        assert!(df.is_ok());
         let df = df.unwrap();
         assert_eq!(df.name.as_deref(), Some("AutoStretch"));
-        let rkgb = HistogramTransformation::new(0.000735, 0.003758, 1.0, 0.0, 1.0);
-        assert_eq!(df.rk(), &rkgb);
-        assert_eq!(df.g(), &rkgb);
-        assert_eq!(df.b(), &rkgb);
+        let rgb = HistogramTransformation::new(0.000735, 0.003758, 1.0, 0.0, 1.0);
+        assert_eq!(df.r(), &rgb);
+        assert_eq!(df.g(), &rgb);
+        assert_eq!(df.b(), &rgb);
+        assert_eq!(df.l(), &Default::default());
+
+        // should clamp midpoint balance to 1.0, swap high clip and low clip,
+        // clamp shadows_expansion to 0, and clamp highlights_expansion to 1
+        let malformed = r#"<DisplayFunction m="1.000735:1.000735:1.000735:0.5"
+            s="1:1:1:0"
+            h="0.003758:0.003758:0.003758:1"
+            l="1:1:1:0"
+            r="0:0:0:1" />"#;
+        let xml = Parser::default().parse_string(malformed.as_bytes()).unwrap();
+        let df = DisplayFunction::parse_node(xml.get_root_readonly().unwrap());
+        let df = df.unwrap();
+        assert_eq!(df.name, None);
+        let rgb = HistogramTransformation::new(1.0, 0.003758, 1.0, 0.0, 1.0);
+        assert_eq!(df.r(), &rgb);
+        assert_eq!(df.g(), &rgb);
+        assert_eq!(df.b(), &rgb);
         assert_eq!(df.l(), &Default::default());
     }
 }
