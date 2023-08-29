@@ -1,10 +1,9 @@
 use error_stack::{fmt::{Charset, ColorMode}, Report};
 use fitsio::{images::{ImageDescription, ImageType, WriteImage}, FitsFile};
-use ndarray::ArrayD;
 use tracing::Level;
 use tracing_error::ErrorLayer;
 use tracing_subscriber::{prelude::*, FmtSubscriber};
-use xisf_rs::image::ImageData;
+use xisf_rs::image::{DynImageData, RawImageData};
 use std::{env, any::TypeId, fmt::Debug};
 
 fn main() {
@@ -54,8 +53,9 @@ fn main() {
     // passing the file as a &mut Option because we want to do something different the first time this is run
     // several FITS readers expect the primary hdu to contain image information in files with multiple images,
     // so we need a mechanism to create a primary hdu (that is, open the file itself) on demand to fit image specifications
-    fn write_array<T: WriteImage + Clone + Debug + 'static>(fits: &mut Option<FitsFile>, out_name: &str, arr: &ArrayD<T>, name: impl AsRef<str>, format: ImageType) {
-        println!("{:?}", arr);
+    fn write_array<T: WriteImage + Clone + Debug + 'static>(fits: &mut Option<FitsFile>, out_name: &str, arr: RawImageData<T>, name: impl AsRef<str>, format: ImageType) {
+        let arr = arr.into_planar_layout();
+        println!("{:?}", *arr);
         // remove channel as an axis if there's only one
         let trim = if arr.shape().starts_with(&[1]) { 1 } else { 0 };
         let image_description = ImageDescription {
@@ -97,13 +97,13 @@ fn main() {
         let data = image.read_data(&xisf).expect(format!("read image {i} data").as_str());
         let name = image.id.clone().unwrap_or(format!("IMAGE_{i}"));
         match data {
-            ImageData::UInt8(arr) => write_array(&mut fits, &out, &arr, name, ImageType::UnsignedByte),
-            ImageData::UInt16(arr) => write_array(&mut fits, &out, &arr, name, ImageType::UnsignedShort),
-            ImageData::UInt32(arr) => write_array(&mut fits, &out, &arr, name, ImageType::UnsignedLong),
-            ImageData::UInt64(arr) => write_array(&mut fits, &out, &arr, name, ImageType::LongLong),
-            ImageData::Float32(arr) => write_array(&mut fits, &out, &arr, name, ImageType::Float),
-            ImageData::Float64(arr) => write_array(&mut fits, &out, &arr, name, ImageType::Double),
-            ImageData::Complex32(_) | ImageData::Complex64(_) => eprintln!("FITS does not support complex images"),
+            DynImageData::UInt8(arr) => write_array(&mut fits, &out, arr, name, ImageType::UnsignedByte),
+            DynImageData::UInt16(arr) => write_array(&mut fits, &out, arr, name, ImageType::UnsignedShort),
+            DynImageData::UInt32(arr) => write_array(&mut fits, &out, arr, name, ImageType::UnsignedLong),
+            DynImageData::UInt64(arr) => write_array(&mut fits, &out, arr, name, ImageType::LongLong),
+            DynImageData::Float32(arr) => write_array(&mut fits, &out, arr, name, ImageType::Float),
+            DynImageData::Float64(arr) => write_array(&mut fits, &out, arr, name, ImageType::Double),
+            DynImageData::Complex32(_) | DynImageData::Complex64(_) => eprintln!("FITS does not support complex images"),
         }
     }
 }

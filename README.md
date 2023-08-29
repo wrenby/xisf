@@ -38,6 +38,7 @@ XML Digital Signature Verification | ❌ | ❌ | ❌
 - libxml2
 - lz4 <!-- Is this dependency static or dynamic? Static links would require the BSD-2-Clause license to be distributed with binary copies, I think -->
 - Can be configured to use zlib or zlib-ng
+- zstd
 
 # Road Map
 

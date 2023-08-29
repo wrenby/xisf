@@ -5,8 +5,9 @@ use libxml::readonly::RoNode;
 
 use crate::error::ParseNodeError;
 
+/// Screen transfer function
 #[derive(Clone, Debug, PartialEq)]
-pub struct HistogramTransformation {
+pub struct STF {
     midtones_balance: f64,
     shadows_clip: f64,
     highlights_clip: f64,
@@ -17,7 +18,7 @@ pub struct HistogramTransformation {
     expand_delta: f64,
 }
 /// [Identity transformation](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#__equation_23__)
-impl Default for HistogramTransformation {
+impl Default for STF {
     fn default() -> Self {
         Self {
             midtones_balance: 0.5,
@@ -30,7 +31,7 @@ impl Default for HistogramTransformation {
         }
     }
 }
-impl HistogramTransformation {
+impl STF {
     /// Parameters:
     /// - `m`: midtones balance, clamped to the range [0, 1]
     /// - `s`: shadows clipping point, clamped to the range [0, 1]
@@ -128,9 +129,9 @@ impl HistogramTransformation {
 #[derive(Clone, Debug, Default)]
 pub struct DisplayFunction {
     pub name: Option<String>,
-    /// Histogram transform functions for red/gray, green, blue, and ... honestly I don't understand the fourth one, respectively.
-    /// The fourth element is called "lightness" in the spec, but the PCL never uses it for anything as far as I can tell
-    pub rgbl: [HistogramTransformation; 4],
+    /// Screen transfer functions for red/gray, green, blue, and luminance channels, respectively.
+    /// The fourth element is confusing, I think it's only used when showing a grayscale view of a color image?
+    pub rgbl: [STF; 4],
 }
 /// == implementation ignores the name
 impl PartialEq for DisplayFunction {
@@ -180,10 +181,10 @@ impl DisplayFunction {
         let l = parse_rkgbl("l", &mut attrs)?;
         let r = parse_rkgbl("r", &mut attrs)?;
 
-        let rk = HistogramTransformation::new(m[0], s[0], h[0], l[0], r[0]);
-        let g  = HistogramTransformation::new(m[1], s[1], h[1], l[1], r[1]);
-        let b  = HistogramTransformation::new(m[2], s[2], h[2], l[2], r[2]);
-        let l  = HistogramTransformation::new(m[3], s[3], h[3], l[3], r[3]);
+        let rk = STF::new(m[0], s[0], h[0], l[0], r[0]);
+        let g  = STF::new(m[1], s[1], h[1], l[1], r[1]);
+        let b  = STF::new(m[2], s[2], h[2], l[2], r[2]);
+        let l  = STF::new(m[3], s[3], h[3], l[3], r[3]);
 
         for child in children {
             tracing::warn!("Ignoring unrecognized child node <{}>", child.get_name());
@@ -196,23 +197,23 @@ impl DisplayFunction {
     }
 
     #[inline]
-    pub fn r(&self) -> &HistogramTransformation {
+    pub fn r(&self) -> &STF {
         &self.rgbl[0]
     }
     #[inline]
-    pub fn k(&self) -> &HistogramTransformation {
+    pub fn k(&self) -> &STF {
         &self.rgbl[0]
     }
     #[inline]
-    pub fn g(&self) -> &HistogramTransformation {
+    pub fn g(&self) -> &STF {
         &self.rgbl[1]
     }
     #[inline]
-    pub fn b(&self) -> &HistogramTransformation {
+    pub fn b(&self) -> &STF {
         &self.rgbl[2]
     }
     #[inline]
-    pub fn l(&self) -> &HistogramTransformation {
+    pub fn l(&self) -> &STF {
         &self.rgbl[3]
     }
 }
@@ -236,7 +237,7 @@ mod tests {
         let df = DisplayFunction::parse_node(xml.get_root_readonly().unwrap());
         let df = df.unwrap();
         assert_eq!(df.name.as_deref(), Some("AutoStretch"));
-        let rgb = HistogramTransformation::new(0.000735, 0.003758, 1.0, 0.0, 1.0);
+        let rgb = STF::new(0.000735, 0.003758, 1.0, 0.0, 1.0);
         assert_eq!(df.r(), &rgb);
         assert_eq!(df.g(), &rgb);
         assert_eq!(df.b(), &rgb);
@@ -253,7 +254,7 @@ mod tests {
         let df = DisplayFunction::parse_node(xml.get_root_readonly().unwrap());
         let df = df.unwrap();
         assert_eq!(df.name, None);
-        let rgb = HistogramTransformation::new(1.0, 0.003758, 1.0, 0.0, 1.0);
+        let rgb = STF::new(1.0, 0.003758, 1.0, 0.0, 1.0);
         assert_eq!(df.r(), &rgb);
         assert_eq!(df.g(), &rgb);
         assert_eq!(df.b(), &rgb);
