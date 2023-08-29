@@ -342,34 +342,15 @@ impl Location {
             let uncompressed_sizes: Vec<_> = compression.sub_blocks.0.iter().map(|tup| tup.0).collect();
             match compression.algorithm {
                 CompressionAlgorithm::Zlib => {
-                    let mut zlib = raw.sub_blocks(&uncompressed_sizes[..])
+                    let zlib = raw.sub_blocks(&uncompressed_sizes[..])
                         .map(|shared| {
                             Ok(ZlibDecoder::new(shared))
                         }).unwrap(); // safe because the map function always succeeds, and that's the only point of failure
 
-                    match compression.byte_shuffling {
-                        // byte shuffling is a nop for 1 or 0 size items
-                        // not sure why any implementation would encode it like this, but best to save the clone I guess
-                        Some(item_size) if usize::from(item_size) > 1 => {
-                            let item_size: usize = item_size.into();
-                            let n = compression.uncompressed_size() / item_size;
-                            if n * item_size != compression.uncompressed_size() {
-                                return Err(report!(ReadDataBlockError)).attach_printable("Uncompressed size is not divisible by item size")
-                            }
-                            // to unshuffle, call this same code block [n, item_size] instead of [item_size, n]
-                            let mut buf = Array2::<u8>::zeros([n, item_size]);
-                            zlib.read_exact(buf.as_slice_memory_order_mut().unwrap())
-                                .change_context(ReadDataBlockError)
-                                .attach_printable("Failed to read bytes into temporary buffer for unshuffling")?;
-                            buf.swap_axes(0, 1);
-                            Ok(Box::new(Cursor::new(buf.as_standard_layout().to_owned().into_raw_vec())))
-                        },
-                        _ => Ok(Box::new(zlib))
-                    }
-
+                    Self::unshuffle(zlib, compression)
                 },
                 CompressionAlgorithm::Lz4 | CompressionAlgorithm::Lz4HC => {
-                    let mut lz4 = raw.sub_blocks(&uncompressed_sizes[..])
+                    let lz4 = raw.sub_blocks(&uncompressed_sizes[..])
                         .map(|shared| {
                             Ok(
                                 lz4::Decoder::new(shared)
@@ -378,29 +359,45 @@ impl Location {
                         }).change_context(ReadDataBlockError)
                         .attach_printable("Failed to initialize Lz4 decoder")?;
 
-                    match compression.byte_shuffling {
-                        // byte shuffling is a nop for 1 or 0 size items
-                        // not sure why any implementation would encode it like this, but best to save the clone I guess
-                        Some(item_size) if usize::from(item_size) > 1 => {
-                            let item_size: usize = item_size.into();
-                            let n = compression.uncompressed_size() / item_size;
-                            if n * item_size != compression.uncompressed_size() {
-                                return Err(report!(ReadDataBlockError)).attach_printable("Uncompressed size is not divisible by item size")
-                            }
-                            // to unshuffle, call this same code block [n, item_size] instead of [item_size, n]
-                            let mut buf = Array2::<u8>::zeros([n, item_size]);
-                            lz4.read_exact(buf.as_slice_memory_order_mut().unwrap())
-                                .change_context(ReadDataBlockError)
-                                .attach_printable("Failed to read bytes into temporary buffer for unshuffling")?;
-                            buf.swap_axes(0, 1);
-                            Ok(Box::new(Cursor::new(buf.as_standard_layout().to_owned().into_raw_vec())))
-                        },
-                        _ => Ok(Box::new(lz4))
-                    }
-                }
+                    Self::unshuffle(lz4, compression)
+                },
+                CompressionAlgorithm::Zstd => {
+                    let zstd = raw.sub_blocks(&uncompressed_sizes[..])
+                        .map(|shared| {
+                            Ok(
+                                zstd::Decoder::new(shared)
+                                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+                            )
+                        }).change_context(ReadDataBlockError)
+                        .attach_printable("Failed to initialize Zstd decoder")?;
+
+                    Self::unshuffle(zstd, compression)
+                },
             }
         } else {
             Ok(raw)
+        }
+    }
+
+    fn unshuffle<'a>(mut reader: impl Read + 'a, compression: &Compression) -> Result<Box<dyn Read + 'a>, Report<ReadDataBlockError>> {
+        match compression.byte_shuffling {
+            // byte shuffling is a nop for 1 or 0 size items
+            // not sure why any implementation would encode it like this, but best to save the clone I guess
+            Some(item_size) if usize::from(item_size) > 1 => {
+                let item_size: usize = item_size.into();
+                let n = compression.uncompressed_size() / item_size;
+                if n * item_size != compression.uncompressed_size() {
+                    return Err(report!(ReadDataBlockError)).attach_printable("Uncompressed size is not divisible by item size")
+                }
+                // to unshuffle, call this same code block [n, item_size] instead of [item_size, n]
+                let mut buf = Array2::<u8>::zeros([n, item_size]);
+                reader.read_exact(buf.as_slice_memory_order_mut().unwrap())
+                    .change_context(ReadDataBlockError)
+                    .attach_printable("Failed to read bytes into temporary buffer for unshuffling")?;
+                buf.swap_axes(0, 1);
+                Ok(Box::new(Cursor::new(buf.as_standard_layout().to_owned().into_raw_vec())))
+            },
+            _ => Ok(Box::new(reader))
         }
     }
 
@@ -657,6 +654,7 @@ pub enum CompressionAlgorithm {
     Zlib,
     Lz4,
     Lz4HC,
+    Zstd,
 }
 
 /// Only used as an intermediate step in decoding, never exposed as part of the API
@@ -669,6 +667,8 @@ enum CompressionAttr {
     Lz4ByteShuffling (usize, NonZeroUsize),
     Lz4HC(usize),
     Lz4HCByteShuffling(usize, NonZeroUsize),
+    Zstd(usize),
+    ZstdByteShuffling(usize, NonZeroUsize),
 }
 impl CompressionAttr {
     pub fn algorithm(&self) -> CompressionAlgorithm {
@@ -676,6 +676,7 @@ impl CompressionAttr {
             Self::Zlib(_) | Self::ZlibByteShuffling(..) => CompressionAlgorithm::Zlib,
             Self::Lz4(_) | Self::Lz4ByteShuffling(..) => CompressionAlgorithm::Lz4,
             Self::Lz4HC(_) | Self::Lz4HCByteShuffling(..) => CompressionAlgorithm::Lz4HC,
+            Self::Zstd(_) | Self::ZstdByteShuffling(..) => CompressionAlgorithm::Zstd,
         }
     }
     pub fn uncompressed_size(&self) -> usize {
@@ -686,14 +687,17 @@ impl CompressionAttr {
             &Self::Lz4ByteShuffling(size, _) => size,
             &Self::Lz4HC(size) => size,
             &Self::Lz4HCByteShuffling(size, _) => size,
+            &Self::Zstd(size) => size,
+            &Self::ZstdByteShuffling(size, _) => size,
         }
     }
     pub fn shuffle_item_size(&self) -> Option<NonZeroUsize> {
         match self {
-            Self::Zlib(_) | Self::Lz4(_) | Self::Lz4HC(_) => None,
+            Self::Zlib(_) | Self::Lz4(_) | Self::Lz4HC(_) | Self::Zstd(_) => None,
             &Self::ZlibByteShuffling(_, item_size) => Some(item_size),
             &Self::Lz4ByteShuffling(_, item_size) => Some(item_size),
             &Self::Lz4HCByteShuffling(_, item_size) => Some(item_size),
+            &Self::ZstdByteShuffling(_, item_size) => Some(item_size),
         }
     }
 }
@@ -712,6 +716,10 @@ impl fmt::Display for CompressionAttr {
                 f.write_fmt(format_args!("lz4hc:{uncompressed_size}")),
             Self::Lz4HCByteShuffling(uncompressed_size, item_size) =>
                 f.write_fmt(format_args!("lz4hc+sh:{uncompressed_size}:{item_size}")),
+            Self::Zstd(uncompressed_size) =>
+                f.write_fmt(format_args!("zstd:{uncompressed_size}")),
+            Self::ZstdByteShuffling(uncompressed_size, item_size) =>
+                f.write_fmt(format_args!("zstd+sh:{uncompressed_size}:{item_size}")),
         }
     }
 }
@@ -754,8 +762,17 @@ impl FromStr for CompressionAttr {
                     .ok_or(report!(CONTEXT))
                     .attach_printable("Byte shuffling item size cannot be zero")?
             )),
+            &["zstd", uncompressed_size] => Ok(Self::Zstd(
+                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?
+            )),
+            &["zstd+sh", uncompressed_size, item_size] => Ok(Self::ZstdByteShuffling(
+                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
+                NonZeroUsize::new(parse_size(item_size, ITEM_SIZE_ERR)?)
+                    .ok_or(report!(CONTEXT))
+                    .attach_printable("Byte shuffling item size cannot be zero")?
+            )),
             _bad => Err(report!(CONTEXT)).attach_printable(format!(
-                "Unrecognized pattern: expected one of [zlib:len, zlib+sh:len:item-size, lz4:len, lz4+sh:len:item-size, lz4hc:len, lz4hc+sh:len:item-size], found {s}"
+                "Unrecognized pattern: expected one of [zlib:len, zlib+sh:len:item-size, lz4:len, lz4+sh:len:item-size, lz4hc:len, lz4hc+sh:len:item-size, zstd:len, zstd+sh:len:item-size], found {s}"
             ))
         }
     }

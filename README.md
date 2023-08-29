@@ -21,7 +21,7 @@ Image Metadata | <details>Attributes, FITS Keywords, ICC Profile, RGB Working Sp
 Supported XISF Property Locations | ❌ | `<Image>`<sup>5</sup> | `<Image>`, `<Metadata>`, `<xisf>`
 `<Table>` Element | ❌ | ❌ | ❌
 `<Reference>` Element | ✅ | ❌ | ❌
-Data Block Compression | <details><summary>✅</summary>`zlib`, `lz4`, `lz4hc`</details> | <details><summary>✅<sup>6</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>✅</summary>`zlib`, `lz4`, `lz4hc`</details>
+Data Block Compression | <details><summary>✅<sup>6</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>✅<sup>6, 7</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>✅<sup>6</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details>
 Checksum Verification | ✅ | ❌ | ✅
 XML Digital Signature Verification | ❌ | ❌ | ❌
 
@@ -30,7 +30,8 @@ XML Digital Signature Verification | ❌ | ❌ | ❌
 3. Raw strings only; cannot parse values
 4. [Missing imageType, offset, orientation, and uuid attributes](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L674)
 5. [Int32, Float32, Float64, String, and TimePoint only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/variant.cpp#L379)
-6. Sub-blocks not yet supported (this limits supported images to 4GiB); `zstd` support is nonstandard
+6. `zstd` support is nonstandard for spec version 1.0, but [has been confirmed for an upcoming version of the standard](https://pixinsight.com/forum/index.php?threads/xisf-standard-revision-re-zstd.21230/)
+7. Sub-blocks not yet supported (this limits supported images to 4GiB)
 
 ## Dependencies
 - Minimum Supported Rust Version (MSRV): 1.64.0, verified for `x86_64-unknown-linux-gnu`

@@ -44,3 +44,4 @@ digest = "0.10.7"
 bytemuck = "1.13.1"
 ordered-multimap = "0.7.0"
 time = { version = "0.3.27", features = ["parsing"] }
+zstd = "0.12.4"
