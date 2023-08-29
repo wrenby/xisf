@@ -128,7 +128,8 @@ impl HistogramTransformation {
 #[derive(Clone, Debug, Default)]
 pub struct DisplayFunction {
     pub name: Option<String>,
-    /// Histogram transform functions for red/gray, green, blue, and ... honestly I don't understand the fourth one, respectively
+    /// Histogram transform functions for red/gray, green, blue, and ... honestly I don't understand the fourth one, respectively.
+    /// The fourth element is called "lightness" in the spec, but the PCL never uses it for anything as far as I can tell
     pub rgbl: [HistogramTransformation; 4],
 }
 /// == implementation ignores the name
