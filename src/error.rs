@@ -28,9 +28,19 @@ impl Display for ReadFitsKeyError {
 }
 impl Error for ReadFitsKeyError {}
 
-// TODO: get rid of this; replace it with a ParseNodeError
-#[derive(Clone, Debug)]
-pub struct ReferenceError;
+/// A failure to either parse or resolve a `<Reference>` XML element
+///
+/// Enum variants are listed in order of precedence, e.g. if the parser encounters the node
+/// `<Reference uid="invalid uid" ref="invalid uid" />` (a recursive reference and an invalid uid)
+/// attempting to resolve the reference will return `InvalidUid` instead of `Recursive`
+#[derive(Clone, Debug, PartialEq)]
+pub enum ReferenceError {
+    MissingRef,
+    InvalidUid,
+    NotFound,
+    Recursive,
+    Ambiguous,
+}
 impl Display for ReferenceError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("Invalid Reference element")

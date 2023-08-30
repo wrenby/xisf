@@ -188,10 +188,7 @@ impl XISF {
             .attach_printable("No root element found in XML header")?;
 
         // we need to pass down a global xpath context in order to resolve <Reference> elements
-        // using the root element instead of the document node because
-        // although I wish there were a way to cast Node as RoNode, this unwrap is safe because we know the element exists
-        // ? at least I'm pretty sure it is...
-        let xpath = XpathContext::from_node(&xml.get_root_element().unwrap())
+        let xpath = XpathContext::new(&xml)
             .map_err(|_| report!(ReadFileError))
             .attach_printable("Failed to create XPATH context for XML header")?;
 

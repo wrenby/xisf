@@ -22,7 +22,7 @@ rust-version = "1.64.0"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-error-stack = "0.4.0"
+error-stack = { version = "0.4.0", features = ["spantrace"] }
 tracing = { version = "0.1.37", default-features = false, features = ["std"] }
 byteorder = "1.4.3"
 libxml = "0.3.3"
