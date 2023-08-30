@@ -19,6 +19,9 @@ impl ICCProfile {
         } else if let Some(mut data_block) = DataBlock::parse_node(node, CONTEXT, &mut attrs)? {
             data_block.byte_order = ByteOrder::Big;
 
+            for remaining in attrs.into_iter() {
+                tracing::warn!("Ignoring unrecognized attribute {}=\"{}\"", remaining.0, remaining.1);
+            }
             for child in children {
                 tracing::warn!("Ignoring unrecognized child node <{}>", child.get_name());
             }

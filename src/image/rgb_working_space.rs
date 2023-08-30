@@ -114,6 +114,9 @@ impl RGBWorkingSpace {
         let chromaticity_y = parse_coordinates("y", &mut attrs)?;
         let luminance = parse_coordinates("Y", &mut attrs)?;
 
+        for remaining in attrs.into_iter() {
+            tracing::warn!("Ignoring unrecognized attribute {}=\"{}\"", remaining.0, remaining.1);
+        }
         for child in children {
             tracing::warn!("Ignoring unrecognized child node <{}>", child.get_name());
         }

@@ -36,6 +36,9 @@ pub use rgb_working_space::*;
 mod display_function;
 pub use display_function::*;
 
+mod color_filter_array;
+pub use color_filter_array::*;
+
 #[derive(Clone, Debug)]
 pub struct Image {
     data_block: DataBlock,
@@ -56,6 +59,7 @@ pub struct Image {
     icc_profile: Option<ICCProfile>,
     rgb_working_space: Option<RGBWorkingSpace>,
     display_function: Option<DisplayFunction>,
+    color_filter_array: Option<CFA>,
 }
 
 impl Image {
@@ -200,6 +204,7 @@ impl Image {
         let mut icc_profile = None;
         let mut rgb_working_space = None;
         let mut display_function = None;
+        let mut color_filter_array = None;
 
         // TODO: ignore text/<Data> children of nodes with inline or embedded blocks, respectively
         for mut child in node.get_child_nodes() {
@@ -225,6 +230,7 @@ impl Image {
                 "ICCProfile" => parse_optional!(ICCProfile, icc_profile),
                 "RGBWorkingSpace" => parse_optional!(RGBWorkingSpace, rgb_working_space),
                 "DisplayFunction" => parse_optional!(DisplayFunction, display_function),
+                "ColorFilterArray" => parse_optional!(CFA, color_filter_array),
                 bad => tracing::warn!("Ignoring unrecognized child node <{}>", bad),
             }
         }
@@ -247,6 +253,7 @@ impl Image {
             icc_profile,
             rgb_working_space,
             display_function,
+            color_filter_array,
         })
     }
 

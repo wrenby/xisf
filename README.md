@@ -17,8 +17,8 @@ Monolithic Files | Decode | Encode + Decode | Encode + Decode
 Distributed Files | ❌ | ❌ | ❌
 N-D Images | ✅ | [❌](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816) | [❌](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001)
 Pixel Sample Formats | Scalar, Complex | Agnostic (Raw Bytes Only) | Scalar<sup>1</sup>, Complex
-Image Metadata | <details>Attributes, FITS Keywords, ICC Profile, RGB Working Space, Display Function</details> | <details>Attributes<sup>2</sup>, FITS Keywords<sup>3</sup>, XISF Properties, Thumbnail, CFA, ICC Profile</details> | <details>Attributes<sup>4</sup>, FITS Keywords, XISF Properties, Thumbnail, CFA, ICC Profile, RGB Working Space, Display Function, Resolution</details>
-Supported XISF Property Locations | ❌ | `<Image>`<sup>5</sup> | `<Image>`, `<Metadata>`, `<xisf>`
+Image Metadata | <details>Attributes, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA</details> | <details>Attributes<sup>2</sup>, XISF Properties<sup>3</sup>, FITS Keywords<sup>4</sup>, ICC Profile, CFA, Thumbnail</details> | <details>Attributes<sup>5</sup>, XISF Properties, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA, Resolution, Thumbnail</details>
+Supported XISF Property Locations | ❌ | `<Image>` | `<Image>`, `<Metadata>`, `<xisf>`
 `<Table>` Element | ❌ | ❌ | ❌
 `<Reference>` Element | ✅ | ❌ | ❌
 Data Block Compression | <details><summary>✅<sup>6</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>✅<sup>6, 7</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>✅<sup>6</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details>
@@ -27,9 +27,9 @@ XML Digital Signature Verification | ❌ | ❌ | ❌
 
 1. [Does not support 64-bit integers](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L599)
 2. [Only mandatory attributes and colorSpace](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L815)
-3. Raw strings only; cannot parse values
-4. [Missing imageType, offset, orientation, and uuid attributes](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L674)
-5. [Int32, Float32, Float64, String, and TimePoint only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/variant.cpp#L379)
+3. [Int32, Float32, Float64, String, and TimePoint only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/variant.cpp#L379)
+4. Raw strings only; cannot parse values
+5. [Missing imageType, offset, orientation, and uuid attributes](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L674)
 6. `zstd` support is nonstandard for spec version 1.0, but [has been confirmed for an upcoming version of the standard](https://pixinsight.com/forum/index.php?threads/xisf-standard-revision-re-zstd.21230/)
 7. Sub-blocks not yet supported (this limits supported images to 4GiB)
 
@@ -42,15 +42,16 @@ XML Digital Signature Verification | ❌ | ❌ | ❌
 
 # Road Map
 
-- [x] Read raw images
+- [x] Read N-dimensional images
 - [x] Data block compression
 - [x] Checksum verification
 - [x] Images of complex numbers
 - [x] `<Reference>` element
 - [x] `<FITSKeyword>` element
+- [ ] Miscellaneous image metadata
+- [ ] Image thumbnails
 - [ ] Write monolithic files
 - [ ] Scalar, Complex, String, and TimePoint `<Property>` elements
-- [ ] Image thumbnails: turn `read_data` into a trait
 - [ ] Documentation and tests
 - [ ] CIE L\*a\*b color space conversion -- is this out of scope?
 - [ ] Remote resources
@@ -66,4 +67,3 @@ XML Digital Signature Verification | ❌ | ❌ | ❌
 - [ ] async data block read functions
   - See `async_compression` crate
 - [ ] C/C++11 interface with `cbindgen`
-- [ ] zstd support? Nonstandard, but `libXISF` is doing it, and that seems to be the implementation that's catching on in the C++ world

@@ -73,9 +73,9 @@ use memory_layout::*;
 /// with either the first or last axis encoding the number of channels, depending on the layout:
 /// - If `L` is [`Planar`]: The **first** axis of the inner [`ArrayD<T>`] is the channel axis, and the remaining *N* axes are image dimensions.
 /// - If `L` is [`Normal`]: The **last** axis of the inner [`ArrayD<T>`] is the channel axis, and the previous *N* axes are image dimensions.
-/// - If `L` is [`Raw`] or [`AcceptCurrent`]: This data is arranged however it was in the file.
+/// - If `L` is [`Raw`] or [`Accept`]: This data is arranged however it was in the file, according to the [`Image`](super::Image)'s .
 ///
-/// Allows transparent access to the inner buffer through [`Deref`] and [`DerefMut`] only if `L` is `Planar`, `Normal`, or `AcceptCurrent`.
+/// Allows transparent access to the inner buffer through [`Deref`] and [`DerefMut`] only if `L` is `Planar`, `Normal`, or `Accept`.
 /// Since all images are returned with `L = Raw` when read from file, this forces the end user to make a conscious decision to either
 /// accept the responsibility of handling multiple image formats with [`Self::accept_current_layout()`] or transform it into a specific layout
 /// their program is equipped to handle with [`Self::into_planar_layout()`] or [`Self::into_normal_layout()`].
@@ -124,6 +124,14 @@ impl<T: Clone, L: Layout> ImageData<T, L> {
     pub fn layout(&self) -> PixelStorage {
         L::layout(&self)
     }
+    /// # Panics
+    /// If the image is 0-dimensional
+    pub fn num_channels(&self) -> usize {
+        match self.layout() {
+            PixelStorage::Planar => *self.inner.shape().first().unwrap(),
+            PixelStorage::Normal => *self.inner.shape().last().unwrap(),
+        }
+    }
 }
 impl<T: Clone> ImageData<T, Raw> {
     pub fn new(buf: ArrayD<T>, layout: PixelStorage) -> Self {
@@ -133,8 +141,8 @@ impl<T: Clone> ImageData<T, Raw> {
         }
     }
     /// Allows a method of accessing the underlying buffer without risking a memory clone
-    pub fn accept_current_layout(self) -> ImageData<T, AcceptCurrent> {
-        ImageData::<T, AcceptCurrent> {
+    pub fn accept_current_layout(self) -> ImageData<T, Accept> {
+        ImageData::<T, Accept> {
             inner: self.inner,
             layout: self.layout,
         }
@@ -346,8 +354,8 @@ pub mod memory_layout {
 
     /// The exact same thing as [`Raw`] except [`ImageData<T, AcceptCurrent>`] implements [`Deref`], meaning its inner data can be accessed
     #[derive(Clone, Debug)]
-    pub struct AcceptCurrent;
-    impl Layout for AcceptCurrent {
+    pub struct Accept;
+    impl Layout for Accept {
         type Storage = <Raw as Layout>::Storage;
 
         fn into_planar<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Planar> {
@@ -398,5 +406,5 @@ pub mod memory_layout {
     pub(crate) trait Known: Layout {}
     impl Known for Planar {}
     impl Known for Normal {}
-    impl Known for AcceptCurrent {}
+    impl Known for Accept {}
 }

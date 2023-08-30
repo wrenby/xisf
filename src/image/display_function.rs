@@ -194,6 +194,9 @@ impl DisplayFunction {
         let b  = STF::new(m[2], s[2], h[2], l[2], r[2]);
         let l  = STF::new(m[3], s[3], h[3], l[3], r[3]);
 
+        for remaining in attrs.into_iter() {
+            tracing::warn!("Ignoring unrecognized attribute {}=\"{}\"", remaining.0, remaining.1);
+        }
         for child in children {
             tracing::warn!("Ignoring unrecognized child node <{}>", child.get_name());
         }
@@ -207,8 +210,8 @@ impl DisplayFunction {
     /// A common name used to distinguish this display function from others or describe its behavior.
     /// May contain any valid Unicode.
     #[inline]
-    pub fn name(&self) -> &Option<String> {
-        &self.name
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
     }
 
     /// Screen transfer functions for the red channel of an RGB image
@@ -268,7 +271,7 @@ mod tests {
         let xml = Parser::default().parse_string(auto_stretch.as_bytes()).unwrap();
         let df = DisplayFunction::parse_node(xml.get_root_readonly().unwrap());
         let df = df.unwrap();
-        assert_eq!(df.name.as_deref(), Some("AutoStretch"));
+        assert_eq!(df.name(), Some("AutoStretch"));
         let rgb = STF::new(0.000735, 0.003758, 1.0, 0.0, 1.0);
         assert_eq!(df.r(), &rgb);
         assert_eq!(df.g(), &rgb);
@@ -285,7 +288,7 @@ mod tests {
         let xml = Parser::default().parse_string(malformed.as_bytes()).unwrap();
         let df = DisplayFunction::parse_node(xml.get_root_readonly().unwrap());
         let df = df.unwrap();
-        assert_eq!(df.name, None);
+        assert_eq!(df.name(), None);
         let rgb = STF::new(1.0, 0.003758, 1.0, 0.0, 1.0);
         assert_eq!(df.r(), &rgb);
         assert_eq!(df.g(), &rgb);
