@@ -1,4 +1,4 @@
-use ndarray::ArrayD;
+use ndarray::{ArrayD, CowArray, IxDyn};
 use num_complex::Complex;
 use std::{
     marker::PhantomData,
@@ -86,11 +86,17 @@ use memory_layout::*;
 ///
 /// ```
 /// use xisf_rs::{XISF, image::RawImageData};
+/// use ndarray::s;
 /// let xisf = XISF::read_file("tests/files/2ch.xisf", &Default::default()).expect("failed to read file");
 /// let img = xisf.get_image(0).read_data(&xisf).expect("failed to read image");
 /// let raw: RawImageData<u16> = img.try_into().expect("not u16 samples");
-/// assert_eq!(raw.to_planar_layout().shape(), &[2, 10, 4]);
-/// assert_eq!(raw.to_normal_layout().shape(), &[10, 4, 2]);
+/// let planar = raw.to_planar_layout();
+/// let normal = raw.to_normal_layout();
+/// assert_eq!(planar.shape(), &[2, 10, 4]);
+/// assert_eq!(normal.shape(), &[10, 4, 2]);
+/// for c in 0..2 {
+///     assert_eq!(planar.slice(s![c, .., ..]), normal.slice(s![.., .., c]));
+/// }
 /// ```
 #[derive(Clone, Debug)]
 pub struct ImageData<T: Clone, L: Layout> {
@@ -109,10 +115,10 @@ impl<T: Clone, L: Layout> ImageData<T, L> {
     pub fn into_normal_layout(self) -> ImageData<T, Normal> {
         L::into_normal(self)
     }
-    pub fn to_planar_layout(&self) -> ImageData<T, Planar> {
+    pub fn to_planar_layout(&self) -> CowImageData<T, Planar> {
         L::to_planar(self)
     }
-    pub fn to_normal_layout(&self) -> ImageData<T, Normal> {
+    pub fn to_normal_layout(&self) -> CowImageData<T, Normal> {
         L::to_normal(self)
     }
     pub fn layout(&self) -> PixelStorage {
@@ -147,16 +153,53 @@ impl<T: Clone, L: Known> DerefMut for ImageData<T, L> {
     }
 }
 
+#[derive(Debug)]
+pub struct CowImageData<'a, T: Clone, L: Layout> {
+    inner: CowArray<'a, T, IxDyn>,
+    layout: L::Storage,
+}
+impl<'a, T: Clone, L: Layout> CowImageData<'a, T, L> {
+    pub fn borrowed(value: &'a ImageData<T, L>) -> Self {
+        Self {
+            inner: (&value.inner).into(),
+            layout: value.layout.clone(),
+        }
+    }
+    pub fn owned(value: ImageData<T, L>) -> Self {
+        Self {
+            inner: value.inner.into(),
+            layout: value.layout,
+        }
+    }
+    pub fn to_owned(&self) -> ImageData<T, L> {
+        ImageData::<T, L> {
+            inner: self.inner.to_owned(),
+            layout: self.layout.clone(),
+        }
+    }
+}
+impl<'a, T: Clone, L: Known> Deref for CowImageData<'a, T, L> {
+    type Target = CowArray<'a, T, IxDyn>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+impl<'a, T: Clone, L: Known> DerefMut for CowImageData<'a, T, L> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
 /// A small library of functions and types to simplify management of different [memory layouts](PixelStorage)
 pub mod memory_layout {
     use super::*;
     pub trait Layout: Sized {
-        type Storage;
+        type Storage: Clone;
         fn into_planar<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Planar>;
         fn into_normal<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Normal>;
-        // TODO: make to_planar and to_normal return some kind of Cow type
-        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Planar>;
-        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Normal>;
+        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Planar>;
+        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Normal>;
         fn layout<T: Clone>(img: &ImageData<T, Self>) -> PixelStorage;
     }
 
@@ -197,13 +240,15 @@ pub mod memory_layout {
         }
 
         #[inline]
-        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Planar> {
-            img.clone()
+        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Planar> {
+            CowImageData::<T, Planar>::borrowed(img)
         }
 
         #[inline]
-        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Normal> {
-            Self::into_normal(img.clone())
+        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Normal> {
+            CowImageData::<T, Normal>::owned(
+                Self::into_normal(img.clone())
+            )
         }
 
         #[inline]
@@ -230,13 +275,15 @@ pub mod memory_layout {
         }
 
         #[inline]
-        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Planar> {
-            Self::into_planar(img.clone())
+        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Planar> {
+            CowImageData::<T, Planar>::owned(
+                Self::into_planar(img.clone())
+            )
         }
 
         #[inline]
-        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Normal> {
-            img.clone()
+        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Normal> {
+            CowImageData::<T, Normal>::borrowed(img.into())
         }
 
         #[inline]
@@ -271,14 +318,24 @@ pub mod memory_layout {
             }
         }
 
-        #[inline]
-        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Planar> {
-            Self::into_planar(img.clone())
+        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Planar> {
+            CowImageData::<T, Planar> {
+                inner: match img.layout {
+                    PixelStorage::Planar => (&img.inner).into(),
+                    PixelStorage::Normal => normal_to_planar(img.inner.clone()).into(),
+                },
+                layout: PhantomData,
+            }
         }
 
-        #[inline]
-        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Normal> {
-            Self::into_normal(img.clone())
+        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Normal> {
+            CowImageData::<T, Normal> {
+                inner: match img.layout {
+                    PixelStorage::Planar => planar_to_normal(img.inner.clone()).into(),
+                    PixelStorage::Normal => (&img.inner).into(),
+                },
+                layout: PhantomData,
+            }
         }
 
         #[inline]
@@ -313,14 +370,24 @@ pub mod memory_layout {
             }
         }
 
-        #[inline]
-        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Planar> {
-            Self::into_planar(img.clone())
+        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Planar> {
+            CowImageData::<T, Planar> {
+                inner: match img.layout {
+                    PixelStorage::Planar => (&img.inner).into(),
+                    PixelStorage::Normal => normal_to_planar(img.inner.clone()).into(),
+                },
+                layout: PhantomData,
+            }
         }
 
-        #[inline]
-        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Normal> {
-            Self::into_normal(img.clone())
+        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Normal> {
+            CowImageData::<T, Normal> {
+                inner: match img.layout {
+                    PixelStorage::Planar => planar_to_normal(img.inner.clone()).into(),
+                    PixelStorage::Normal => (&img.inner).into(),
+                },
+                layout: PhantomData,
+            }
         }
 
         fn layout<T: Clone>(img: &ImageData<T, Self>) -> PixelStorage {

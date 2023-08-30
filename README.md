@@ -37,8 +37,8 @@ XML Digital Signature Verification | ❌ | ❌ | ❌
 - Minimum Supported Rust Version (MSRV): 1.64.0, verified for `x86_64-unknown-linux-gnu`
 - libxml2 (MIT)
 - lz4 (BSD-2-Clause)
-- Can be configured to use zlib or zlib-ng
 - zstd (BSD-3-Clause)
+- Can be configured to use zlib or zlib-ng
 
 # Road Map
 
