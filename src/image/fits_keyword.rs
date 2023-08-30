@@ -51,6 +51,7 @@ impl FitsKeyword {
     }
 }
 
+/// POD type to store the value and comment of a FITS key
 #[derive(Clone, Debug)]
 pub struct FitsKeyValue {
     pub value: String,

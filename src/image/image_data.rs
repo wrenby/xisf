@@ -6,8 +6,9 @@ use std::{
 };
 use super::PixelStorage;
 
-pub type RawImageData<T> = ImageData<T, Any>;
+pub type RawImageData<T> = ImageData<T, Raw>;
 
+/// An `enum` wrapper for images of all possible [`SampleFormat`](super::SampleFormat)s
 #[derive(Clone, Debug)]
 pub enum DynImageData {
     UInt8(RawImageData<u8>),
@@ -19,6 +20,29 @@ pub enum DynImageData {
     Complex32(RawImageData<Complex<f32>>),
     Complex64(RawImageData<Complex<f64>>),
 }
+macro_rules! try_into_impl {
+    ($enum:ident, $t:ty) => {
+        #[doc=concat!("Returns `Ok(RawImageData<", stringify!($t), ">)` for [`", stringify!($enum), "`](Self::", stringify!($enum), ") variants, and `Err(())` otherwise")]
+        impl TryInto<RawImageData<$t>> for DynImageData {
+            type Error = ();
+            fn try_into(self) -> Result<RawImageData<$t>, Self::Error> {
+                match self {
+                    Self::$enum(raw) => Ok(raw),
+                    _ => Err(()),
+                }
+            }
+        }
+    }
+}
+
+try_into_impl!(UInt8, u8);
+try_into_impl!(UInt16, u16);
+try_into_impl!(UInt32, u32);
+try_into_impl!(UInt64, u64);
+try_into_impl!(Float32, f32);
+try_into_impl!(Float64, f64);
+try_into_impl!(Complex32, Complex<f32>);
+try_into_impl!(Complex64, Complex<f64>);
 
 pub(crate) trait IntoDynImageData {
     fn into_dyn_img(self, layout: PixelStorage) -> DynImageData;
@@ -27,7 +51,7 @@ macro_rules! into_impl {
     ($enum:ident, $t:ty) => {
         impl IntoDynImageData for ArrayD<$t> {
             fn into_dyn_img(self, layout: PixelStorage) -> DynImageData {
-                DynImageData::$enum(ImageData::<$t, Any>::new(self, layout))
+                DynImageData::$enum(RawImageData::<$t>::new(self, layout))
             }
         }
     }
@@ -41,18 +65,61 @@ into_impl!(Float64, f64);
 into_impl!(Complex32, Complex<f32>);
 into_impl!(Complex64, Complex<f64>);
 
-use data_layout::*;
+use memory_layout::*;
 
+/// A wrapper around the raw pixel data with some compile-time checks to avoid unintentionally ignoring its [memory layout](PixelStorage)
+///
+/// For an image with *N* dimensions, the inner [`ArrayD<T>`] has *N + 1* axes,
+/// with either the first or last axis encoding the number of channels, depending on the layout:
+/// - If `L` is [`Planar`]: The **first** axis of the inner [`ArrayD<T>`] is the channel axis, and the remaining *N* axes are image dimensions.
+/// - If `L` is [`Normal`]: The **last** axis of the inner [`ArrayD<T>`] is the channel axis, and the previous *N* axes are image dimensions.
+/// - If `L` is [`Raw`] or [`AcceptCurrent`]: This data is arranged however it was in the file.
+///
+/// Allows transparent access to the inner buffer through [`Deref`] and [`DerefMut`] only if `L` is `Planar`, `Normal`, or `AcceptCurrent`.
+/// Since all images are returned with `L = Raw` when read from file, this forces the end user to make a conscious decision to either
+/// accept the responsibility of handling multiple image formats with [`Self::accept_current_layout()`] or transform it into a specific layout
+/// their program is equipped to handle with [`Self::into_planar_layout()`] or [`Self::into_normal_layout()`].
+///
+/// For more information about pixel memory layouts, see the documentation for [`PixelStorage`]
+///
+/// # Example
+///
+/// ```
+/// use xisf_rs::{XISF, image::RawImageData};
+/// let xisf = XISF::read_file("tests/files/2ch.xisf", &Default::default()).expect("failed to read file");
+/// let img = xisf.get_image(0).read_data(&xisf).expect("failed to read image");
+/// let raw: RawImageData<u16> = img.try_into().expect("not u16 samples");
+/// assert_eq!(raw.to_planar_layout().shape(), &[2, 10, 4]);
+/// assert_eq!(raw.to_normal_layout().shape(), &[10, 4, 2]);
+/// ```
 #[derive(Clone, Debug)]
 pub struct ImageData<T: Clone, L: Layout> {
     inner: ArrayD<T>,
     /// Uses an associated type to save some memory once the layout is known.
-    /// When the data is first read and `L` is [`Any`], `layout` will store a [`PixelStorage`] value.
-    /// After the data has been transformed into a desired memory layout, `layout` will just be [`PhantomData`]
+    /// When the data is first read and `L` is [`Raw`], `layout` will store a [`PixelStorage`] value.
+    /// After the data has been transformed into a specific memory layout with [`Self::into_planar_layout()`],
+    /// `layout` will just be [`PhantomData`]
     /// since the layout is encoded in the template parameter, and storing it here would be redundant.
     layout: L::Storage,
 }
-impl<T: Clone> ImageData<T, Any> {
+impl<T: Clone, L: Layout> ImageData<T, L> {
+    pub fn into_planar_layout(self) -> ImageData<T, Planar> {
+        L::into_planar(self)
+    }
+    pub fn into_normal_layout(self) -> ImageData<T, Normal> {
+        L::into_normal(self)
+    }
+    pub fn to_planar_layout(&self) -> ImageData<T, Planar> {
+        L::to_planar(self)
+    }
+    pub fn to_normal_layout(&self) -> ImageData<T, Normal> {
+        L::to_normal(self)
+    }
+    pub fn layout(&self) -> PixelStorage {
+        L::layout(&self)
+    }
+}
+impl<T: Clone> ImageData<T, Raw> {
     pub fn new(buf: ArrayD<T>, layout: PixelStorage) -> Self {
         Self {
             inner: buf,
@@ -65,17 +132,6 @@ impl<T: Clone> ImageData<T, Any> {
             inner: self.inner,
             layout: self.layout,
         }
-    }
-}
-impl<T: Clone, L: Layout> ImageData<T, L> {
-    pub fn into_planar_layout(self) -> ImageData<T, Planar> {
-        L::into_planar(self)
-    }
-    pub fn into_normal_layout(self) -> ImageData<T, Normal> {
-        L::into_normal(self)
-    }
-    pub fn layout(&self) -> PixelStorage {
-        L::layout(&self)
     }
 }
 impl<T: Clone, L: Known> Deref for ImageData<T, L> {
@@ -91,12 +147,16 @@ impl<T: Clone, L: Known> DerefMut for ImageData<T, L> {
     }
 }
 
-pub mod data_layout {
+/// A small library of functions and types to simplify management of different [memory layouts](PixelStorage)
+pub mod memory_layout {
     use super::*;
     pub trait Layout: Sized {
         type Storage;
         fn into_planar<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Planar>;
         fn into_normal<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Normal>;
+        // TODO: make to_planar and to_normal return some kind of Cow type
+        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Planar>;
+        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Normal>;
         fn layout<T: Clone>(img: &ImageData<T, Self>) -> PixelStorage;
     }
 
@@ -137,6 +197,16 @@ pub mod data_layout {
         }
 
         #[inline]
+        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Planar> {
+            img.clone()
+        }
+
+        #[inline]
+        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Normal> {
+            Self::into_normal(img.clone())
+        }
+
+        #[inline]
         fn layout<T: Clone>(_img: &ImageData<T, Self>) -> PixelStorage {
             PixelStorage::Planar
         }
@@ -160,14 +230,26 @@ pub mod data_layout {
         }
 
         #[inline]
+        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Planar> {
+            Self::into_planar(img.clone())
+        }
+
+        #[inline]
+        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Normal> {
+            img.clone()
+        }
+
+        #[inline]
         fn layout<T: Clone>(_img: &ImageData<T, Self>) -> PixelStorage {
             PixelStorage::Normal
         }
     }
 
+    // shouldn't actually have to derive Clone or Debug here, but it's an easier fix than
+    // manually implementing Clone and Debug for [`super::DynImageData`]
     #[derive(Clone, Debug)]
-    pub struct Any;
-    impl Layout for Any {
+    pub struct Raw;
+    impl Layout for Raw {
         type Storage = PixelStorage;
         fn into_planar<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Planar> {
             ImageData::<T, Planar> {
@@ -190,16 +272,26 @@ pub mod data_layout {
         }
 
         #[inline]
+        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Planar> {
+            Self::into_planar(img.clone())
+        }
+
+        #[inline]
+        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Normal> {
+            Self::into_normal(img.clone())
+        }
+
+        #[inline]
         fn layout<T: Clone>(img: &ImageData<T, Self>) -> PixelStorage {
             img.layout
         }
     }
 
-    /// The exact same thing as [`Any`] except [`ImageData<T, AcceptCurrent>`] implements [`Deref`], meaning its inner data can be accessed
-    #[derive(Debug, Clone)]
+    /// The exact same thing as [`Raw`] except [`ImageData<T, AcceptCurrent>`] implements [`Deref`], meaning its inner data can be accessed
+    #[derive(Clone, Debug)]
     pub struct AcceptCurrent;
     impl Layout for AcceptCurrent {
-        type Storage = <Any as Layout>::Storage;
+        type Storage = <Raw as Layout>::Storage;
 
         fn into_planar<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Planar> {
             ImageData::<T, Planar> {
@@ -219,6 +311,16 @@ pub mod data_layout {
                 },
                 layout: PhantomData,
             }
+        }
+
+        #[inline]
+        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Planar> {
+            Self::into_planar(img.clone())
+        }
+
+        #[inline]
+        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> ImageData<T, Normal> {
+            Self::into_normal(img.clone())
         }
 
         fn layout<T: Clone>(img: &ImageData<T, Self>) -> PixelStorage {

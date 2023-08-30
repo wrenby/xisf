@@ -5,7 +5,7 @@ use libxml::readonly::RoNode;
 
 use crate::error::ParseNodeError;
 
-/// Screen transfer function
+/// A single-channel screen transfer function
 #[derive(Clone, Debug, PartialEq)]
 pub struct STF {
     midtones_balance: f64,
@@ -126,14 +126,22 @@ impl STF {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+/// A multi-channel screen transfer function
+#[derive(Clone, Debug)]
 pub struct DisplayFunction {
-    pub name: Option<String>,
-    /// Screen transfer functions for red/gray, green, blue, and luminance channels, respectively.
-    /// The fourth element is confusing, I think it's only used when showing a grayscale view of a color image?
-    pub rgbl: [STF; 4],
+    name: Option<String>,
+    rgbl: [STF; 4],
 }
-/// == implementation ignores the name
+/// No name and identity STFs for each channel
+impl Default for DisplayFunction {
+    fn default() -> Self {
+        Self {
+            name: Default::default(),
+            rgbl: Default::default(),
+        }
+    }
+}
+/// Ignores the name, just compares the single-channel STFs
 impl PartialEq for DisplayFunction {
     fn eq(&self, other: &Self) -> bool {
         self.rgbl == other.rgbl
@@ -196,25 +204,49 @@ impl DisplayFunction {
         })
     }
 
+    /// A common name used to distinguish this display function from others or describe its behavior.
+    /// May contain any valid Unicode.
+    #[inline]
+    pub fn name(&self) -> &Option<String> {
+        &self.name
+    }
+
+    /// Screen transfer functions for the red channel of an RGB image
     #[inline]
     pub fn r(&self) -> &STF {
         &self.rgbl[0]
     }
+    /// Screen transfer function for the single channel of a grayscale image -- just an alias for [`Self::r()`]
     #[inline]
     pub fn k(&self) -> &STF {
         &self.rgbl[0]
     }
+    /// Screen transfer functions for the red channel of an RGB image
     #[inline]
     pub fn g(&self) -> &STF {
         &self.rgbl[1]
     }
+    /// Screen transfer functions for the red channel of an RGB image
     #[inline]
     pub fn b(&self) -> &STF {
         &self.rgbl[2]
     }
+    /// Screen transfer function for grayscale/luminance previews of an RGB image
+    ///
+    /// <div class="warning">Do not use this for grayscale images! This STF is only meant to be used
+    /// for grayscale previews of color images. For grayscale images, [`Self::k()`] should be used instead.</div>
     #[inline]
     pub fn l(&self) -> &STF {
         &self.rgbl[3]
+    }
+}
+
+/// Allows transparent access to the per-channel [`STF`]
+impl std::ops::Index<usize> for DisplayFunction {
+    type Output = STF;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.rgbl[index]
     }
 }
 

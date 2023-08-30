@@ -14,7 +14,7 @@ pub struct RGBWorkingSpace {
     /// A common name for this RGB working space
     pub name: Option<String>,
     /// A transformation from RGB coordinate space into linear CIE XYZ color space
-    pub transfer_function: TransferFunction,
+    pub linearization: Linearization,
     /// The x coordinates of primary colors in CIE xyY color space, arranged in R,G,B order
     pub chromaticity_x: [f32; 3],
     /// The y coordinates of primary colors in CIE xyY color space, arranged in R,G,B order
@@ -26,7 +26,7 @@ impl Default for RGBWorkingSpace {
     fn default() -> Self {
         Self {
             name: Some("sRGB (D50)".to_string()),
-            transfer_function: TransferFunction::Srgb,
+            linearization: Linearization::Srgb,
             chromaticity_x: [0.648431, 0.321152, 0.155886],
             chromaticity_y: [0.330856, 0.597871, 0.066044],
             luminance: [0.222491, 0.716888, 0.060621],
@@ -71,7 +71,7 @@ impl RGBWorkingSpace {
 
         let transfer_function = if let Some(gamma) = attrs.remove("gamma") {
             match gamma.as_str() {
-                "sRGB" => TransferFunction::Srgb,
+                "sRGB" => Linearization::Srgb,
                 other => {
                     let number = other
                         .trim()
@@ -79,7 +79,7 @@ impl RGBWorkingSpace {
                         .change_context(CONTEXT)
                         .attach_printable_lazy(|| format!("Invalid gamma attribute: expected either \"sRGB\" or a floating-point value greater than zero, found {other}"))?;
                     if number > 0.0 {
-                        TransferFunction::Gamma(number)
+                        Linearization::Gamma(number)
                     } else {
                         return Err(report!(CONTEXT)).attach_printable(format!("Invalid gamma attribute: must be greater than zero, found {other}"))
                     }
@@ -120,7 +120,7 @@ impl RGBWorkingSpace {
 
         Ok(Self {
             name,
-            transfer_function,
+            linearization: transfer_function,
             chromaticity_x,
             chromaticity_y,
             luminance,
@@ -128,15 +128,16 @@ impl RGBWorkingSpace {
     }
 }
 
-/// Encodes a transformation from nonlinear color space into linear color space.
+/// A transformation from nonlinear color space into linear color space
+///
 /// For an sRGB color space, applies a specific piecewise function.
 /// For a non-sRGB color space, raises the sample to the power of gamma.
 #[derive(Clone, Debug, PartialEq)]
-pub enum TransferFunction {
+pub enum Linearization {
     Gamma(f32),
     Srgb,
 }
-impl TransferFunction {
+impl Linearization {
     pub fn apply(&self, x: f32) -> f32 {
         match self {
             &Self::Gamma(gamma) => x.powf(gamma),
@@ -171,7 +172,7 @@ mod tests {
         assert_eq!(rgbws.chromaticity_x, [0.648431, 0.230154, 0.155886]);
         assert_eq!(rgbws.chromaticity_y, [0.330856, 0.701572, 0.066044]);
         assert_eq!(rgbws.luminance, [0.311114, 0.625662, 0.063224]);
-        assert_eq!(rgbws.transfer_function, TransferFunction::Gamma(2.2));
+        assert_eq!(rgbws.linearization, Linearization::Gamma(2.2));
         assert_eq!(rgbws.name.as_deref(), Some("Adobe RGB (1998)"));
 
         let srgb = r#"<RGBWorkingSpace x="0.648431:0.321152:0.155886"
@@ -186,7 +187,7 @@ mod tests {
         assert_eq!(rgbws.chromaticity_x, [0.648431, 0.321152, 0.155886]);
         assert_eq!(rgbws.chromaticity_y, [0.330856, 0.597871, 0.066044]);
         assert_eq!(rgbws.luminance, [0.222491, 0.716888, 0.060621]);
-        assert_eq!(rgbws.transfer_function, TransferFunction::Srgb);
+        assert_eq!(rgbws.linearization, Linearization::Srgb);
         assert_eq!(rgbws.name.as_deref(), Some("sRGB IEC61966-2.1"));
 
         let srgb_uniform_linear = r#"<RGBWorkingSpace x="0.648431:0.230154:0.155886"
@@ -201,7 +202,7 @@ mod tests {
         assert_eq!(rgbws.chromaticity_x, [0.648431, 0.230154, 0.155886]);
         assert_eq!(rgbws.chromaticity_y, [0.330856, 0.701572, 0.066044]);
         assert_eq!(rgbws.luminance, [0.333333, 0.333333, 0.333333]);
-        assert_eq!(rgbws.transfer_function, TransferFunction::Gamma(1.0));
+        assert_eq!(rgbws.linearization, Linearization::Gamma(1.0));
         assert_eq!(rgbws.name.as_deref(), Some("Uniform Linear with sRGB Primaries"));
     }
 }

@@ -35,10 +35,10 @@ XML Digital Signature Verification | ❌ | ❌ | ❌
 
 ## Dependencies
 - Minimum Supported Rust Version (MSRV): 1.64.0, verified for `x86_64-unknown-linux-gnu`
-- libxml2
-- lz4 <!-- Is this dependency static or dynamic? Static links would require the BSD-2-Clause license to be distributed with binary copies, I think -->
+- libxml2 (MIT)
+- lz4 (BSD-2-Clause)
 - Can be configured to use zlib or zlib-ng
-- zstd
+- zstd (BSD-3-Clause)
 
 # Road Map
 
