@@ -1,3 +1,24 @@
+//! [![Crates.io](https://img.shields.io/crates/v/xisf-rs)](https://crates.io/crates/xisf-rs)
+//! [![docs.rs](https://img.shields.io/docsrs/xisf-rs)](https://docs.rs/crate/xisf-rs/latest)
+//! ![Minimum rustc version](https://img.shields.io/badge/rustc-1.64+-lightgray.svg)
+//! ![License](https://img.shields.io/crates/l/xisf-rs.svg)
+//!
+//! An unaffiliated implementation of Pleiades Astrophoto's open-source Extensible Image Serialization Format (XISF) file format,
+//! the native image format for their flagship editing software PixInsight. Aims for 100% support for
+//! [spec version 1.0](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html), as opposed to implementations such as
+//! [libXISF](https://gitea.nouspiro.space/nou/libXISF) or Pleiades Astrophoto's own [PixInsight Class Libraries](https://gitlab.com/pixinsight/PCL),
+//! which are written with 2D images in mind.
+//!
+//! See the examples folder for a an approximately 100-line XISF to FITS converter powered by this library.
+//! <div class="warning">
+//!
+//! The examples folder is set up as part of a workspace, which turns off example auto-discovery.
+//! The command to run the program in subfolder `examples/NAME` from the root directory
+//! is `cargo run -p NAME` rather than `cargo run --example NAME`.
+//!
+//! </div>
+
+
 use byteorder::{LittleEndian, ReadBytesExt};
 use error_stack::{Report, ResultExt, report};
 use libxml::{
@@ -24,6 +45,7 @@ use image::Image;
 mod reference;
 pub(crate) use reference::*;
 
+/// Flags to alter the behavior of the reader
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct ReadOptions {
@@ -45,6 +67,7 @@ impl Default for ReadOptions {
     }
 }
 
+/// Flags to alter the behavior of the writer
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct WriteOptions {
@@ -231,12 +254,25 @@ impl XISF {
         })
     }
 
+    /// Returns an iterator over all images in the file
     pub fn images(&self) -> impl Iterator<Item = &Image> {
         self.images.iter()
     }
+    /// Returns the total number of images in the file
+    ///
+    /// <div class="warning">
+    ///
+    /// Although XISF is colloquially an image format, the XISF spec allows for files with no images at all.
+    /// Such files may instead have arbitrary data stored in tables, or root-level XISF properties.
+    ///
+    /// </div>
     pub fn num_images(&self) -> usize {
         self.images.len()
     }
+    /// Returns a reference to the `i`-th image in the file
+    ///
+    /// # Panics
+    /// If `i` is outside the range `0..num_images()`
     pub fn get_image(&self, i: usize) -> &Image {
         &self.images[i]
     }

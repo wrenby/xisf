@@ -236,8 +236,12 @@ impl DisplayFunction {
     }
     /// Screen transfer function for grayscale/luminance previews of an RGB image
     ///
-    /// <div class="warning">Do not use this for grayscale images! This STF is only meant to be used
-    /// for grayscale previews of color images. For grayscale images, [`Self::k()`] should be used instead.</div>
+    /// <div class="warning">
+    ///
+    /// Do not use this for grayscale images! This STF is only meant to be used
+    /// for grayscale previews of color images. For grayscale images, [`Self::k()`] should be used instead.
+    ///
+    /// </div>
     #[inline]
     pub fn l(&self) -> &STF {
         &self.rgbl[3]

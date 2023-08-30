@@ -94,6 +94,9 @@ impl Image {
             if geometry.len() < 2 {
                 return Err(report!(CONTEXT))
                     .attach_printable("Invalid geometry attribute: must have at least one dimension and one channel")
+            } else {
+                // convert to row-major order
+                geometry = geometry.into_iter().rev().collect();
             }
         } else {
             return Err(report!(CONTEXT)).attach_printable("Missing geometry attribute")
@@ -235,9 +238,26 @@ impl Image {
             }
         }
 
+        //===============//
+        // SANITY CHECKS //
+        //===============//
+
+        if geometry[0] < color_space.num_channels() {
+            return Err(report!(CONTEXT))
+                .attach_printable(format!(
+                    "Insufficient color channels: {color_space} color space requires {}; only found {}",
+                    color_space.num_channels(),
+                    geometry[0]
+                ));
+        }
+
+        if color_filter_array.is_some() && geometry.len() - 1 != 2 {
+            tracing::warn!("ColorFilterArray element only has a defined meaning for 2D images; found one on a {}D image", geometry.len() - 1);
+        }
+
         Ok(Image {
             data_block,
-            geometry: geometry.into_iter().rev().collect(), // swap to row-major order
+            geometry,
             sample_format,
 
             bounds,
@@ -263,23 +283,17 @@ impl Image {
     pub fn num_channels(&self) -> usize {
         self.geometry[0]
     }
-    /// Called nominal channels in the spec, equivalent to `num_channels().max(3)`
+    /// Called nominal channels in the spec, this is the number of channels required to represent
+    /// all components of the image's color space (1 for grayscale, 3 for RGB or L\*a\*b\*)
     pub fn num_color_channels(&self) -> usize {
-        self.geometry[0].max(3)
+        self.color_space.num_channels()
     }
-    /// Any channel after the first three is considered an alpha channel
+    /// Any channel after what's needed for the image's color space (1 for grayscale, 3 for RGB or L\*a\*b\*) is considered an alpha channel
     pub fn num_alpha_channels(&self) -> usize {
-        if self.geometry[0] > 3 {
-            self.geometry[0] - 3
-        } else {
-            0
-        }
+        self.geometry[0] - self.color_space.num_channels()
     }
 
     // TODO: convert CIE L*a*b images to RGB
-    // ! output array will not be stored contiguously in memory if the pixel storage mode is Normal
-    // ! if you need contiguous data, i.e. for interoperability, call `.as_standard_layout()` on the array before accessing the slice
-    // ! be warned that `.as_standard_layout()` clones the entire memory block if it isn't a no-op
     pub fn read_data(&self, root: &crate::XISF) -> Result<DynImageData, Report<ReadDataBlockError>> {
         self.data_block.verify_checksum(root)?;
         let mut reader = self.data_block.decompressed_bytes(root)?;
@@ -420,16 +434,20 @@ impl Image {
     /// Returns a reference to the embedded ICC profile, if one exists.
     /// If the returned value is `Some`, obtain the profile data by calling `read_data()` on the contained value.
     /// Note: `read_data()` just returns a `Vec<u8>`; consider the `lcms2` crate if you need to actually decode it.
-    pub fn icc_profile(&self) -> &Option<ICCProfile> {
-        &self.icc_profile
+    pub fn icc_profile(&self) -> Option<&ICCProfile> {
+        self.icc_profile.as_ref()
     }
 
-    pub fn rgb_working_space(&self) -> &Option<RGBWorkingSpace> {
-        &self.rgb_working_space
+    pub fn rgb_working_space(&self) -> Option<&RGBWorkingSpace> {
+        self.rgb_working_space.as_ref()
     }
 
-    pub fn display_function(&self) -> &Option<DisplayFunction> {
-        &self.display_function
+    pub fn display_function(&self) -> Option<&DisplayFunction> {
+        self.display_function.as_ref()
+    }
+
+    pub fn cfa(&self) -> Option<&CFA> {
+        self.color_filter_array.as_ref()
     }
 }
 
@@ -504,6 +522,14 @@ pub enum ColorSpace {
     RGB,
     CIELab,
 }
+impl ColorSpace {
+    pub fn num_channels(&self) -> usize {
+        match self {
+            Self::Gray => 1,
+            Self::RGB | Self::CIELab => 3,
+        }
+    }
+}
 
 /// A transformation to be applied before visual presentation of the image
 ///
@@ -547,6 +573,7 @@ impl FromStr for Orientation {
     }
 }
 
+/// A rotation (in multiples of 90 degrees) to be applied before visual presentation of the image
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Rotation {
     #[default]
