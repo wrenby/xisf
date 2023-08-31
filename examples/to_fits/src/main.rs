@@ -71,11 +71,9 @@ fn main() {
                 .open()
                 .expect("create fits file")
         });
-        // create_image adds an EXTNAME key automatically, but primary HDUs don't have one by default
+        // create_image adds an EXTNAME key automatically, but primary HDUs are just called _PRIMARY
         let hdu = if first_image {
-            let hdu = fits.primary_hdu().expect("primary hdu");
-            hdu.write_key(fits, "EXTNAME", name.as_ref()).expect("write name to header");
-            hdu
+            fits.primary_hdu().expect("primary hdu")
         } else {
             fits.create_image(name.as_ref(), &image_description).expect("extended hdu")
         };

@@ -5,7 +5,7 @@ use libxml::readonly::RoNode;
 
 use crate::error::ParseNodeError;
 
-/// Sets the location of the red, green, and blue primary colors in the CIE 1931 chromaticity diagram using the
+/// Describes the location of the red, green, and blue primary colors in the CIE 1931 chromaticity diagram using the
 /// [xyY coordinate system](https://en.wikipedia.org/wiki/CIE_1931_color_space#CIE_xy_chromaticity_diagram_and_the_CIE_xyY_color_space)
 /// <div class="warning">XISF color spaces are specified relative to D50 white, commonly used for print media,
 /// not the D65 white more commonly used for digital media.</div>
@@ -69,7 +69,7 @@ impl RGBWorkingSpace {
 
         let name = attrs.remove("name");
 
-        let transfer_function = if let Some(gamma) = attrs.remove("gamma") {
+        let linearization = if let Some(gamma) = attrs.remove("gamma") {
             match gamma.as_str() {
                 "sRGB" => Linearization::Srgb,
                 other => {
@@ -123,7 +123,7 @@ impl RGBWorkingSpace {
 
         Ok(Self {
             name,
-            linearization: transfer_function,
+            linearization,
             chromaticity_x,
             chromaticity_y,
             luminance,
