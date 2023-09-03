@@ -1,7 +1,7 @@
 # xisf-rs
 
 [![Crates.io](https://img.shields.io/crates/v/xisf-rs)](https://crates.io/crates/xisf-rs)
-[![docs.rs](https://img.shields.io/docsrs/xisf-rs)](https://docs.rs/crate/xisf-rs/latest)
+[![docs.rs](https://img.shields.io/docsrs/xisf-rs)](https://docs.rs/xisf-rs)
 ![Minimum rustc version](https://img.shields.io/badge/rustc-1.64+-lightgray.svg)
 ![License](https://img.shields.io/crates/l/xisf-rs.svg)
 
@@ -14,7 +14,7 @@ An unaffiliated implementation of Pleiades Astrophoto's open-source Extensible I
 Language | Rust | C++ | C++
 License | MIT | GPLv3 | BSD-4-Clause-like
 Monolithic Files | Decode | Encode + Decode | Encode + Decode
-Distributed Files | ❌ | ❌ | ❌
+Distributed Files | <details><summary>Decode (Partial)</summary>Supported schemes: `file`, `http`/`https` (basic auth not supported), and `ftp` (credentials must be encoded in URI). No local caching; no XISB files.</details> | ❌ | ❌
 N-D Images | ✅ | [❌](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816) | [❌](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001)
 Pixel Sample Formats | Scalar, Complex | Agnostic (Raw Bytes Only) | Scalar<sup>1</sup>, Complex
 Image Metadata | <details>Attributes, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA</details> | <details>Attributes<sup>2</sup>, XISF Properties<sup>3</sup>, FITS Keywords<sup>4</sup>, ICC Profile, CFA, Thumbnail</details> | <details>Attributes<sup>5</sup>, XISF Properties, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA, Resolution, Thumbnail</details>

@@ -10,7 +10,7 @@ pub type RawImageData<T> = ImageData<T, Raw>;
 
 /// An `enum` wrapper for images of all possible [`SampleFormat`](super::SampleFormat)s
 ///
-/// If you think you know the sample format of a given image, or your program only accept data of a certain type,
+/// If you think you know the sample format of a given image, or your program only accepts data of a certain type,
 /// you can attempt to convert a `DynImageData` into that type with `let raw: RawImageData<TYPE> = image.read_data(&xisf).try_into();`
 #[derive(Clone, Debug)]
 pub enum DynImageData {
@@ -598,7 +598,7 @@ mod tests {
             *v = match z {
                 0 => y as u8,
                 1 => x as u8,
-                2 => 255 - ((x + y) as u8 / 2),
+                2 => 255 - (x as u8).min(y as u8),
                 _ => unreachable!(),
             };
         }

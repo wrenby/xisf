@@ -21,7 +21,7 @@ use sha2::{Sha256, Sha512};
 use sha3::{Sha3_256, Sha3_512};
 use strum::{EnumString, Display, EnumVariantNames};
 use url::Url;
-use crate::{error::{ParseValueError, ParseNodeError, ReadDataBlockError}, XISF};
+use crate::{error::{ParseValueError, ParseNodeError, ReadDataBlockError}, XISF, Source};
 
 
 #[derive(Debug, Clone, PartialEq)]
@@ -318,18 +318,87 @@ impl Location {
                 Ok(Box::new(Cursor::new(buf)))
             },
             Self::Attachment { position, size } => {
-                let mut file = File::open(&xisf.filename)
-                    .change_context(ReadDataBlockError)?;
-                file.seek(io::SeekFrom::Start(*position))
-                    .change_context(ReadDataBlockError)?;
-                Ok(Box::new(BufReader::new(file).take(*size)))
+                if let Source::MonolithicFile(filename) = &xisf.source {
+                    let mut file = File::open(filename)
+                        .change_context(ReadDataBlockError)?;
+                    file.seek(io::SeekFrom::Start(*position))
+                        .change_context(ReadDataBlockError)?;
+                    Ok(Box::new(BufReader::new(file).take(*size)))
+                }  else {
+                    Err(report!(ReadDataBlockError))
+                        .attach_printable("Data blocks with location=\"attachment\" are only supported for monolithic files")
+                }
             },
             #[allow(unused_variables)]
-            Self::Url { url, index_id } => {
+            Self::Url { url, index_id: None } => {
+                if let Source::DistributedFile(_) = &xisf.source {
+                    match url.scheme() {
+                        "file" => {
+                            let file = File::open(url.path())
+                                .change_context(ReadDataBlockError)?;
+                            Ok(Box::new(BufReader::new(file)))
+                        },
+                        #[cfg(feature = "remote-http")]
+                        "http" | "https" => {
+                            let resp = ureq::get(url.as_str())
+                                .call()
+                                .change_context(ReadDataBlockError)?;
+                            Ok(resp.into_reader())
+                        },
+                        #[cfg(feature = "remote-ftp")]
+                        "ftp" => {
+                            use remotefs::RemoteFs;
+                            const DEFAULT_FTP_PORT: u16 = 21;
+                            let mut ftp = remotefs_ftp::FtpFs::new(
+                                url.host()
+                                    .ok_or(report!(ReadDataBlockError))
+                                    .attach_printable("Invalid FTP hostname")?
+                                    .to_string(),
+                                url.port().unwrap_or(DEFAULT_FTP_PORT)
+                            ).username(url.username())
+                            .password(url.password().unwrap_or(""));
+                            ftp.connect()
+                                .change_context(ReadDataBlockError)
+                                .attach_printable("Failed to connect to FTP server")?;
+                            let file = ftp.open(url.path().as_ref())
+                                .change_context(ReadDataBlockError)
+                                .attach_printable("Failed to open file over FTP")?;
+                            Ok(Box::new(file))
+                        },
+                        bad => Err(report!(ReadDataBlockError))
+                            .attach_printable(format!("Unsupported scheme: {bad}"))
+                    }
+                }  else {
+                    Err(report!(ReadDataBlockError))
+                        .attach_printable("Data blocks with location=\"url(...)\" are only supported for distributed files")
+                }
+            },
+            #[allow(unused_variables)]
+            Self::Url { url, index_id: Some(idx) } => {
                 todo!()
             },
+            Self::Path { path, index_id: None } => {
+                if let Source::DistributedFile(filename) = &xisf.source {
+                    if path.starts_with("@header_dir/") {
+                        // this unwrap is safe because the filename is canonicalized before being stored
+                        let mut path_buf = filename.parent().unwrap().to_owned();
+                        // this unwrap is safe because we just checked that it starts with @header_dir/
+                        path_buf.push(path.strip_prefix("@header_dir/").unwrap());
+                        let file = File::open(path_buf)
+                            .change_context(ReadDataBlockError)?;
+                        Ok(Box::new(BufReader::new(file)))
+                    } else {
+                        let file = File::open(path)
+                            .change_context(ReadDataBlockError)?;
+                        Ok(Box::new(BufReader::new(file)))
+                    }
+                } else {
+                    Err(report!(ReadDataBlockError))
+                        .attach_printable("Data blocks with location=\"path(...)\" are only supported for distributed files")
+                }
+            },
             #[allow(unused_variables)]
-            Self::Path { path, index_id } => {
+            Self::Path { path, index_id: Some(idx) } => {
                 todo!()
             },
         }
@@ -379,6 +448,8 @@ impl Location {
         }
     }
 
+    // TODO: does it make any sense to unshuffle in-place reading one byte at a time?
+    // would have to make a wrapper with a custom Read impl to even test it
     fn unshuffle<'a>(mut reader: impl Read + 'a, compression: &Compression) -> Result<Box<dyn Read + 'a>, Report<ReadDataBlockError>> {
         match compression.byte_shuffling {
             // byte shuffling is a nop for 1 or 0 size items
@@ -403,7 +474,7 @@ impl Location {
 
     pub fn is_remote(&self) -> bool {
         match self {
-            Self::Url { url, .. } if url.scheme() != "file" => true,
+            Self::Url { url, .. } if url.has_host() => true,
             _ => false,
         }
     }
@@ -839,5 +910,104 @@ impl CompressionLevel {
             bad => Err(ParseValueError("CompressionLevel"))
                 .attach_printable(format!("Must be between 0 and 100, found {bad}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ndarray::Array3;
+
+    use super::*;
+
+    fn check_gradient(arr: &Array3<u8>) {
+        for ((x, y, z), v) in arr.indexed_iter() {
+            match z {
+                0 => assert_eq!(*v, y as u8),
+                1 => assert_eq!(*v, x as u8),
+                2 => assert_eq!(*v, 255 - (x as u8).min(y as u8)),
+                _ => unreachable!(),
+            };
+        }
+    }
+
+    #[test]
+    fn local_bin_file() {
+        let local = DataBlock {
+            location: Location::Path { path: "tests/files/gradient.bin".into(), index_id: None },
+            byte_order: ByteOrder::Little, // doesn't matter, since the file is a u8 array
+            checksum: None,
+            compression: None,
+        };
+        let xisf = XISF {
+            source: Source::DistributedFile("tests/files/test.xish".into()),
+            images: vec![],
+        };
+        let mut reader = local.location.raw_bytes(&xisf).unwrap();
+        let mut array: Array3<u8> = Array3::zeros((200, 250, 3)); // 200x250 RGB
+        reader.read_exact(array.as_slice_mut().unwrap()).unwrap();
+        check_gradient(&array);
+
+        let relative = DataBlock {
+            location: Location::Path { path: "@header_dir/gradient.bin".into(), index_id: None },
+            ..local
+        };
+        let mut reader = relative.location.raw_bytes(&xisf).unwrap();
+        reader.read_exact(array.as_slice_mut().unwrap()).unwrap();
+        check_gradient(&array);
+    }
+
+    #[cfg(all(feature = "remote-http", not(docsrs)))]
+    #[test]
+    fn http_bin_file() {
+        let http = DataBlock {
+            location: Location::Url { url: "https://github.com/wrenby/xisf/raw/main/tests/files/gradient.bin".try_into().unwrap(), index_id: None },
+            byte_order: ByteOrder::Little, // doesn't matter, since the file is a u8 array
+            checksum: None,
+            compression: None,
+        };
+        let xisf = XISF {
+            source: Source::DistributedFile("tests/files/test.xish".into()),
+            images: vec![],
+        };
+        let mut reader = http.location.raw_bytes(&xisf).unwrap();
+        let mut array: Array3<u8> = Array3::zeros((200, 250, 3)); // 200x250 RGB
+        reader.read_exact(array.as_slice_mut().unwrap()).unwrap();
+        check_gradient(&array);
+    }
+
+    #[cfg(all(feature = "remote-ftp", not(docsrs)))]
+    #[test]
+    fn ftp_bin_file() {
+        use testcontainers::{core::WaitFor, clients::Cli, images::generic::GenericImage, RunnableImage};
+        let mut server: RunnableImage<_> = GenericImage::new("delfer/alpine-ftp-server", "latest")
+            .with_env_var("USERS", "computer|deactivate_iguana|/files")
+            .with_wait_for(WaitFor::message_on_stderr("passwd: password for computer changed by root"))
+            .into();
+        server = server.with_mapped_port((2121, 21))
+            .with_volume(("./tests/files", "/files"));
+
+        for pasv in 21000..=21010 {
+            server = server.with_mapped_port((pasv, pasv));
+        }
+
+        let docker = Cli::docker();
+        let container = docker.run(server);
+
+        let ftp = DataBlock {
+            location: Location::Url { url: "ftp://computer:deactivate_iguana@localhost:2121/files/gradient.bin".try_into().unwrap(), index_id: None },
+            byte_order: ByteOrder::Little, // doesn't matter, since the file is a u8 array
+            checksum: None,
+            compression: None,
+        };
+        let xisf = XISF {
+            source: Source::DistributedFile("tests/files/test.xish".into()),
+            images: vec![],
+        };
+        let mut reader = ftp.location.raw_bytes(&xisf).unwrap();
+        let mut array: Array3<u8> = Array3::zeros((200, 250, 3)); // 200x250 RGB
+        reader.read_exact(array.as_slice_mut().unwrap()).unwrap();
+        check_gradient(&array);
+
+        container.stop();
     }
 }

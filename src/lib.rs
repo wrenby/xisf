@@ -106,51 +106,82 @@ impl WriteOptions {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) enum Source {
+    MonolithicFile(PathBuf),
+    DistributedFile(PathBuf),
+}
+
+#[derive(Clone, Debug)]
 pub struct XISF {
-    filename: PathBuf,
+    source: Source,
     images: Vec<Image>,
 }
 impl XISF {
     pub fn read_file(filename: impl AsRef<Path>, opts: &ReadOptions) -> Result<Self, Report<ReadFileError>> {
-        let filename_str = filename.as_ref().to_string_lossy().to_string();
+        let filename_path = filename.as_ref();
+        let filename_str = filename_path.to_string_lossy().to_string();
         let _span_guard = tracing::debug_span!("read_file", filename = filename_str).entered();
 
-        let f = File::open(filename.as_ref())
+        let f = File::open(filename_path)
             .change_context(ReadFileError)
             .attach_printable_lazy(|| format!("Failed to open file {filename_str} for reading"))?;
         let mut reader = BufReader::new(f);
 
-        // verify that the first 8 bytes of the file are XISF0100
-        const CORRECT_SIGNATURE: [u8; 8] = *b"XISF0100";
-        let mut signature_buf = [0u8; 8];
-        reader
-            .read_exact(&mut signature_buf)
-            .change_context(ReadFileError)
-            .attach_printable("Failed to read 8-byte field \"file format signature\" at start of file")?;
-        if signature_buf != CORRECT_SIGNATURE {
+        let extension = filename_path.extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_lowercase());
+
+        let mut header_buf;
+        let source;
+        if let Some("xisf") = extension.as_deref() {
+            // verify that the first 8 bytes of the file are XISF0100
+            const CORRECT_SIGNATURE: [u8; 8] = *b"XISF0100";
+            let mut signature_buf = [0u8; 8];
+            reader
+                .read_exact(&mut signature_buf)
+                .change_context(ReadFileError)
+                .attach_printable("Failed to read 8-byte field \"file format signature\" at start of file")?;
+            if signature_buf != CORRECT_SIGNATURE {
+                return Err(report!(ReadFileError))
+                    .attach_printable(format!("Illegal file format signature: expected {CORRECT_SIGNATURE:?} (XISF0100), found {signature_buf:?}"));
+            }
+
+            // next 4 bytes are a little-endian encoded unsigned integer specifying the length of the XML header
+            let header_length = reader
+                .read_u32::<LittleEndian>()
+                .change_context(ReadFileError)
+                .attach_printable("Error parsing 4-byte field \"XML header length\" as little-endian u32")?;
+            tracing::debug!("Header size: {} bytes", header_length);
+
+            const RESERVED_BYTES: i64 = 4;
+            reader
+                .seek_relative(RESERVED_BYTES)
+                .change_context(ReadFileError)
+                .attach_printable("Failed to skip 4 reserved bytes")?;
+
+            // read header to buffer
+            header_buf = vec![0u8; header_length as usize];
+            reader
+                .read_exact(&mut header_buf)
+                .change_context(ReadFileError)
+                .attach_printable_lazy(|| format!("Failed to read {header_length}-byte XML header from file"))?;
+            // TODO: replace with a shared BufReader<File>
+            source = Source::MonolithicFile(filename_path.canonicalize()
+                    .change_context(ReadFileError)
+                    .attach_printable("Failed to canonicalize filename")?);
+        } else if let Some("xish") = extension.as_deref() {
+            header_buf = vec![];
+            reader.read_to_end(&mut header_buf)
+                .change_context(ReadFileError)
+                .attach_printable("Failed to read XML header from XISH file")?;
+            source = Source::DistributedFile(filename_path.to_owned());
+        } else if let Some(bad) = extension {
             return Err(report!(ReadFileError))
-                .attach_printable(format!("Illegal file format signature: expected {CORRECT_SIGNATURE:?} (XISF0100), found {signature_buf:?}"));
-        }
-
-        // next 4 bytes are a little-endian encoded unsigned integer specifying the length of the XML header
-        let header_length = reader
-            .read_u32::<LittleEndian>()
-            .change_context(ReadFileError)
-            .attach_printable("Error parsing 4-byte field \"XML header length\" as little-endian u32")?;
-        tracing::debug!("Header size: {} bytes", header_length);
-
-        const RESERVED_BYTES: i64 = 4;
-        reader
-            .seek_relative(RESERVED_BYTES)
-            .change_context(ReadFileError)
-            .attach_printable("Failed to skip 4 reserved bytes")?;
-
-        // read header to buffer
-        let mut header_buf = vec![0u8; header_length as usize];
-        reader
-            .read_exact(&mut header_buf)
-            .change_context(ReadFileError)
-            .attach_printable_lazy(|| format!("Failed to read {header_length}-byte XML header from file"))?;
+                .attach_printable(format!("Unsupported file extension: {bad}"))
+        } else {
+            return Err(report!(ReadFileError))
+                .attach_printable("File must have an extension to be able to distinguish XISF files from XISH files")
+        };
 
         // parse the header
         let xml = XmlParser::default().parse_string(header_buf)
@@ -200,11 +231,11 @@ impl XISF {
             .map_err(|_| report!(ReadFileError))
             .attach_printable("Failed to associate prefix to xisf namespace in XML header")?;
 
-        Self::parse_root_node(root, &xpath, filename, opts)
+        Self::parse_root_node(root, &xpath, source, opts)
             .change_context(ReadFileError)
     }
 
-    fn parse_root_node(node: RoNode, xpath: &XpathContext, filename: impl AsRef<Path>, opts: &ReadOptions) -> Result<XISF, Report<ParseNodeError>> {
+    fn parse_root_node(node: RoNode, xpath: &XpathContext, source: Source, opts: &ReadOptions) -> Result<XISF, Report<ParseNodeError>> {
         const CONTEXT: ParseNodeError = ParseNodeError("xisf");
         if node.get_name() != "xisf" {
             return Err(report!(CONTEXT))
@@ -246,7 +277,7 @@ impl XISF {
         }
 
         Ok(XISF {
-            filename: filename.as_ref().to_owned(),
+            source,
             images,
         })
     }
