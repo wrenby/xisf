@@ -35,10 +35,10 @@ XML Digital Signature Verification | ❌ | ❌ | ❌
 
 ## Dependencies
 - Minimum Supported Rust Version (MSRV): 1.64.0, verified for `x86_64-unknown-linux-gnu`
-- libxml2 (MIT)
-- lz4 (BSD-2-Clause)
-- zstd (BSD-3-Clause)
-- Can be configured to use zlib or zlib-ng
+- libxml2 ([MIT](https://gitlab.gnome.org/GNOME/libxml2/-/blob/master/Copyright))
+- lz4 ([BSD-2-Clause](https://github.com/lz4/lz4/blob/dev/LICENSE))
+- zstd ([BSD-3-Clause](https://github.com/facebook/zstd/blob/dev/LICENSE))
+- Can be configured to use zlib ([Zlib](https://github.com/madler/zlib/blob/develop/LICENSE)) or zlib-ng ([Zlib](https://github.com/zlib-ng/zlib-ng/blob/develop/LICENSE.md))
 
 # Road Map
 
@@ -48,22 +48,20 @@ XML Digital Signature Verification | ❌ | ❌ | ❌
 - [x] Images of complex numbers
 - [x] `<Reference>` element
 - [x] `<FITSKeyword>` element
-- [ ] Miscellaneous image metadata
-- [ ] Image thumbnails
+- [x] Image thumbnails
+- [x] Remote resources
+  - [ ] Authorization/Credentials Store
+  - [ ] Ask user for trust before connecting
+  - [ ] SFTP/SCP
+  - [ ] Caching <!-- `tempfile`, `stat` crates; HTTP headers -->
+  - [ ] XISB files
+- [x] Non-`<Property>` image metadata
 - [ ] Write monolithic files
 - [ ] Scalar, Complex, String, and TimePoint `<Property>` elements
-- [ ] Documentation and tests
-- [ ] CIE L\*a\*b color space conversion -- is this out of scope?
-- [ ] Remote resources
-  - Ask user to trust a specific source before connecting -- caching or permanently saving preferences per source address is out of scope
-  - `remotefs` crate? Covers (S)FTP+SCP+SMB+S3, that plus an HTTP(S) client should cover most use cases. the SMB library is GPLv3 though :(
-  - Some kind of file cache to avoid re-downloading? Consider `tempfile` crate. Check for changes in file size and last modified with `stat` to ensure up-to-date, and make an option to re-download a specific file in `DataBlock`'s read functions
-    - HTTP(S) supports a more fine-grained cache with `ETag`/`If-None-Match`, `Last-Modified`/`If-Modified-Since` and `Cache-Control` headers
 - [ ] Vector, Matrix `<Property>` elements
-  - Need to look at `cfitsio` for inspiration here
+- [ ] Write distributed files
+- [ ] Color space conversion?
 - [ ] XML Digital Signature verification
-- [ ] 128-bit floating point `<Property>` types ([`rustc_apfloat::ieee::Quad`](https://doc.rust-lang.org/stable/nightly-rustc/rustc_apfloat/ieee/type.Quad.html)? [`fixed::F128`](https://docs.rs/fixed/latest/fixed/struct.F128.html)?)
-  - Neither support any kind of math, but `fixed::F128` supports `bytemuck`, which gives it an advantage
-- [ ] async data block read functions
-  - See `async_compression` crate
+- [ ] 128-bit floating point `<Property>` types <!-- `rustc_apfloat`? `fixed::F128`? latter supports bytemuck -->
+- [ ] async data block read functions <!-- `async_compression` -->
 - [ ] C/C++11 interface with `cbindgen`
