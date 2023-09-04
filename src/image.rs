@@ -1,7 +1,8 @@
 use std::{
+    any::TypeId,
     io::Read,
     fmt,
-    str::FromStr
+    str::FromStr, ops::Deref,
 };
 
 use byteorder::{ReadBytesExt, LE, BE};
@@ -39,14 +40,19 @@ pub use display_function::*;
 mod color_filter_array;
 pub use color_filter_array::*;
 
+mod thumbnail;
+pub use thumbnail::*;
+
+/// Shared components of [`Image`] and [`Thumbnail`] elements
+///
+/// Any public field or function of [`ImageBase`] is transparently accessible from
+/// [`Image`]s or [`Thumbnail`]s through the use of [`Deref`] coercion
 #[derive(Clone, Debug)]
-pub struct Image {
+pub struct ImageBase {
     data_block: DataBlock,
     pub geometry: Vec<usize>,
     pub sample_format: SampleFormat,
 
-    /// For images in a non-RGB color space, these bounds apply to pixel sample values once converted to RGB, not in its native color space
-    pub bounds: Option<SampleBounds>,
     pub image_type: Option<ImageType>,
     pub pixel_storage: PixelStorage,
     pub color_space: ColorSpace,
@@ -59,224 +65,8 @@ pub struct Image {
     icc_profile: Option<ICCProfile>,
     rgb_working_space: Option<RGBWorkingSpace>,
     display_function: Option<DisplayFunction>,
-    color_filter_array: Option<CFA>,
 }
-
-impl Image {
-    pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext, opts: &ReadOptions) -> Result<Self, Report<ParseNodeError>> {
-        const CONTEXT: ParseNodeError = ParseNodeError("Image");
-        let _span_guard = tracing::debug_span!("Image").entered();
-
-        // * this is mutable because we use .remove() instead of .get()
-        // that way, after we've extracted everything we recognize,
-        // we can just iterate through what remains and emit warnings
-        // saying we don't know what so-and-so attribute means
-        let mut attrs = node.get_attributes();
-
-        let data_block = DataBlock::parse_node(node, CONTEXT, &mut attrs)?
-            .ok_or(report!(CONTEXT))
-            .attach_printable("Missing location attribute: Image elements must have a data block")?;
-
-        let mut geometry: Vec<usize> = vec![];
-        if let Some(dims) = attrs.remove("geometry") {
-            for i in dims.split(":") {
-                let dim = parse_auto_radix::<usize>(i.trim())
-                    .change_context(CONTEXT)
-                    .attach_printable("Invalid geometry attribute: failed to parse dimension/channel count")
-                    .attach_printable_lazy(|| format!("Expected pattern \"{{dim_1}}:...:{{dim_N}}:{{channel_count}}\" (for N>=1 and all values > 0), found \"{i}\""))?;
-                if dim > 0 {
-                    geometry.push(dim);
-                } else {
-                    return Err(report!(CONTEXT))
-                        .attach_printable("Invalid geometry attribute: dimensions and channel count all must be nonzero")
-                }
-            }
-            if geometry.len() < 2 {
-                return Err(report!(CONTEXT))
-                    .attach_printable("Invalid geometry attribute: must have at least one dimension and one channel")
-            } else {
-                // convert to row-major order
-                geometry = geometry.into_iter().rev().collect();
-            }
-        } else {
-            return Err(report!(CONTEXT)).attach_printable("Missing geometry attribute")
-        }
-
-        let sample_format = attrs.remove("sampleFormat")
-            .ok_or(report!(CONTEXT))
-            .attach_printable("Missing sampleFormat attribute")
-            .and_then(|val| {
-                val.parse::<SampleFormat>()
-                    .change_context(CONTEXT)
-                    .attach_printable_lazy(||
-                        format!("Invalid sampleFormat attribute: expected one of {:?}, found {val}", SampleFormat::VARIANTS))
-            })?;
-
-        let bounds = if let Some(val) = attrs.remove("bounds") {
-            let (low, high) = val.split_once(":")
-                .ok_or(report!(CONTEXT))
-                .attach_printable_lazy(|| "Invalid bounds attribute: expected pattern \"low:high\", found \"{val}\"")?;
-
-            Some(SampleBounds {
-                low: low.trim().parse::<f64>()
-                    .change_context(CONTEXT)
-                    .attach_printable("Invalid bounds attribute: failed to parse lower bound")?,
-                high: high.trim().parse::<f64>()
-                    .change_context(CONTEXT)
-                    .attach_printable("Invalid bounds attribute: failed to parse upper bound")?
-            })
-        } else if sample_format.requires_bounds() {
-            return Err(report!(CONTEXT))
-                .attach_printable(format!("Missing bounds attribute: required when using using {sample_format} sample format"));
-        } else {
-            None
-        };
-
-        let image_type = if let Some(val) = attrs.remove("imageType") {
-            Some(val.parse::<ImageType>()
-                .change_context(CONTEXT)
-                .attach_printable_lazy(||
-                    format!("Invalid imageType attribute: expected one of {:?}, found {val}", ImageType::VARIANTS))?)
-        } else {
-            None
-        };
-
-        let pixel_storage = if let Some(val) = attrs.remove("pixelStorage") {
-            val.parse::<PixelStorage>()
-                .change_context(CONTEXT)
-                .attach_printable_lazy(||
-                    format!("Invalid pixelStorage attribute: expected one of {:?}, found {val}", PixelStorage::VARIANTS)
-                )?
-        } else {
-            Default::default()
-        };
-
-        let color_space = if let Some(val) = attrs.remove("colorSpace") {
-            val.parse::<ColorSpace>()
-                .change_context(CONTEXT)
-                .attach_printable_lazy(||
-                    format!("Invalid colorSpace attribute: expected one of {:?}, found {val}", ColorSpace::VARIANTS)
-                )?
-        } else {
-            Default::default()
-        };
-
-        let offset = if let Some(val) = attrs.remove("offset") {
-            let maybe_negative = val.parse::<f64>()
-                .change_context(CONTEXT)
-                .attach_printable("Invalid offset attribute")?;
-            if maybe_negative < 0.0 {
-                return Err(report!(CONTEXT)).attach_printable("Invalid offset attribute: must be zero or greater")
-            } else {
-                maybe_negative
-            }
-        } else {
-            0.0
-        };
-
-        let orientation = if let Some(val) = attrs.remove("orientation") {
-            val.parse::<Orientation>()
-                .change_context(CONTEXT)
-                .attach_printable("Invalid orientation attribute")?
-        } else {
-            Default::default()
-        };
-
-        let id = attrs.remove("id");
-        if let Some(id) = &id {
-            if !is_valid_id(id) {
-                return Err(report!(CONTEXT)).attach_printable(
-                    format!("Invalid id attribute: must match regex [_a-zA-Z][_a-zA-Z0-9]*, found \"{id}\"")
-                )
-            }
-        }
-
-        let uuid = if let Some(val) = attrs.remove("uuid") {
-            Some(val.parse::<Uuid>()
-                .change_context(CONTEXT)
-                .attach_printable("Invalid uuid attribute")?)
-        } else {
-            None
-        };
-
-        for remaining in attrs.into_iter() {
-            tracing::warn!("Ignoring unrecognized attribute {}=\"{}\"", remaining.0, remaining.1);
-        }
-
-        let mut fits_header = ListOrderedMultimap::<String, FitsKeyValue>::new();
-        let mut icc_profile = None;
-        let mut rgb_working_space = None;
-        let mut display_function = None;
-        let mut color_filter_array = None;
-
-        // TODO: ignore text/<Data> children of nodes with inline or embedded blocks, respectively
-        for mut child in node.get_child_nodes() {
-            child = child.follow_reference(xpath).change_context(CONTEXT)?;
-
-            macro_rules! parse_optional {
-                ($t:ty, $opt_out:ident) => {
-                    {
-                        let parsed = <$t>::parse_node(child).change_context(CONTEXT)?;
-                        if $opt_out.replace(parsed).is_some() {
-                            tracing::warn!(concat!("Duplicate ", stringify!($t), " element found -- discarding the previous one"));
-                        }
-                    }
-                }
-            }
-
-            match child.get_name().as_str() {
-                "FITSKeyword" if opts.import_fits_keywords => {
-                    let key = FitsKeyword::parse_node(child).change_context(CONTEXT)?;
-                    let val_comm = FitsKeyValue { value: key.value, comment: key.comment };
-                    fits_header.append(key.name, val_comm);
-                },
-                "ICCProfile" => parse_optional!(ICCProfile, icc_profile),
-                "RGBWorkingSpace" => parse_optional!(RGBWorkingSpace, rgb_working_space),
-                "DisplayFunction" => parse_optional!(DisplayFunction, display_function),
-                "ColorFilterArray" => parse_optional!(CFA, color_filter_array),
-                bad => tracing::warn!("Ignoring unrecognized child node <{}>", bad),
-            }
-        }
-
-        //===============//
-        // SANITY CHECKS //
-        //===============//
-
-        if geometry[0] < color_space.num_channels() {
-            return Err(report!(CONTEXT))
-                .attach_printable(format!(
-                    "Insufficient color channels: {color_space} color space requires {}; only found {}",
-                    color_space.num_channels(),
-                    geometry[0]
-                ));
-        }
-
-        if color_filter_array.is_some() && geometry.len() - 1 != 2 {
-            tracing::warn!("ColorFilterArray element only has a defined meaning for 2D images; found one on a {}D image", geometry.len() - 1);
-        }
-
-        Ok(Image {
-            data_block,
-            geometry,
-            sample_format,
-
-            bounds,
-            image_type,
-            pixel_storage,
-            color_space,
-            offset,
-            orientation,
-            id,
-            uuid,
-
-            fits_header,
-            icc_profile,
-            rgb_working_space,
-            display_function,
-            color_filter_array,
-        })
-    }
-
+impl ImageBase {
     /// The number of dimensions in this image
     ///
     /// The channel axis is not considered a dimension
@@ -432,9 +222,272 @@ impl Image {
     pub fn display_function(&self) -> Option<&DisplayFunction> {
         self.display_function.as_ref()
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct Image {
+    base: ImageBase,
+    /// For images in a non-RGB color space, these bounds apply to pixel sample values once converted to RGB, not in its native color space
+    pub bounds: Option<SampleBounds>,
+    color_filter_array: Option<CFA>,
+    thumbnail: Option<Thumbnail>,
+}
+
+
+fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts: &ReadOptions) -> Result<Image, Report<ParseNodeError>> {
+    let is_thumbnail = TypeId::of::<T>() == TypeId::of::<Thumbnail>();
+
+    let context: ParseNodeError = ParseNodeError(T::TAG_NAME);
+    // * this is mutable because we use .remove() instead of .get()
+    // that way, after we've extracted everything we recognize,
+    // we can just iterate through what remains and emit warnings
+    // saying we don't know what so-and-so attribute means
+    let mut attrs = node.get_attributes();
+
+    let data_block = DataBlock::parse_node(node, context, &mut attrs)?
+        .ok_or(report!(context))
+        .attach_printable_lazy(|| format!("Missing location attribute: {} elements must have a data block", T::TAG_NAME))?;
+
+    let mut geometry: Vec<usize> = vec![];
+    if let Some(dims) = attrs.remove("geometry") {
+        for i in dims.split(":") {
+            let dim = parse_auto_radix::<usize>(i.trim())
+                .change_context(context)
+                .attach_printable("Invalid geometry attribute: failed to parse dimension/channel count")
+                .attach_printable_lazy(|| format!("Expected pattern \"{{dim_1}}:...:{{dim_N}}:{{channel_count}}\" (for N>=1 and all values > 0), found \"{i}\""))?;
+            if dim > 0 {
+                geometry.push(dim);
+            } else {
+                return Err(report!(context))
+                    .attach_printable("Invalid geometry attribute: dimensions and channel count all must be nonzero")
+            }
+        }
+        if geometry.len() < 2 {
+            return Err(report!(context))
+                .attach_printable("Invalid geometry attribute: must have at least one dimension and one channel")
+        } else {
+            // convert to row-major order
+            geometry = geometry.into_iter().rev().collect();
+        }
+    } else {
+        return Err(report!(context)).attach_printable("Missing geometry attribute")
+    }
+
+    let sample_format = attrs.remove("sampleFormat")
+        .ok_or(report!(context))
+        .attach_printable("Missing sampleFormat attribute")
+        .and_then(|val| {
+            val.parse::<SampleFormat>()
+                .change_context(context)
+                .attach_printable_lazy(||
+                    format!("Invalid sampleFormat attribute: expected one of {:?}, found {val}", SampleFormat::VARIANTS))
+        })?;
+
+    let bounds = if let Some(val) = attrs.remove("bounds") {
+        let (low, high) = val.split_once(":")
+            .ok_or(report!(context))
+            .attach_printable_lazy(|| "Invalid bounds attribute: expected pattern \"low:high\", found \"{val}\"")?;
+
+        Some(SampleBounds {
+            low: low.trim().parse::<f64>()
+                .change_context(context)
+                .attach_printable("Invalid bounds attribute: failed to parse lower bound")?,
+            high: high.trim().parse::<f64>()
+                .change_context(context)
+                .attach_printable("Invalid bounds attribute: failed to parse upper bound")?
+        })
+    } else if sample_format.requires_bounds() {
+        return Err(report!(context))
+            .attach_printable(format!("Missing bounds attribute: required when using using {sample_format} sample format"));
+    } else {
+        None
+    };
+
+    let image_type = if let Some(val) = attrs.remove("imageType") {
+        Some(val.parse::<ImageType>()
+            .change_context(context)
+            .attach_printable_lazy(||
+                format!("Invalid imageType attribute: expected one of {:?}, found {val}", ImageType::VARIANTS))?)
+    } else {
+        None
+    };
+
+    let pixel_storage = if let Some(val) = attrs.remove("pixelStorage") {
+        val.parse::<PixelStorage>()
+            .change_context(context)
+            .attach_printable_lazy(||
+                format!("Invalid pixelStorage attribute: expected one of {:?}, found {val}", PixelStorage::VARIANTS)
+            )?
+    } else {
+        Default::default()
+    };
+
+    let color_space = if let Some(val) = attrs.remove("colorSpace") {
+        val.parse::<ColorSpace>()
+            .change_context(context)
+            .attach_printable_lazy(||
+                format!("Invalid colorSpace attribute: expected one of {:?}, found {val}", ColorSpace::VARIANTS)
+            )?
+    } else {
+        Default::default()
+    };
+
+    let offset = if let Some(val) = attrs.remove("offset") {
+        let maybe_negative = val.parse::<f64>()
+            .change_context(context)
+            .attach_printable("Invalid offset attribute")?;
+        if maybe_negative < 0.0 {
+            return Err(report!(context)).attach_printable("Invalid offset attribute: must be zero or greater")
+        } else {
+            maybe_negative
+        }
+    } else {
+        0.0
+    };
+
+    let orientation = if let Some(val) = attrs.remove("orientation") {
+        val.parse::<Orientation>()
+            .change_context(context)
+            .attach_printable("Invalid orientation attribute")?
+    } else {
+        Default::default()
+    };
+
+    let id = attrs.remove("id");
+    if let Some(id) = &id {
+        if !is_valid_id(id) {
+            return Err(report!(context)).attach_printable(
+                format!("Invalid id attribute: must match regex [_a-zA-Z][_a-zA-Z0-9]*, found \"{id}\"")
+            )
+        }
+    }
+
+    let uuid = if let Some(val) = attrs.remove("uuid") {
+        Some(val.parse::<Uuid>()
+            .change_context(context)
+            .attach_printable("Invalid uuid attribute")?)
+    } else {
+        None
+    };
+
+    for remaining in attrs.into_iter() {
+        tracing::warn!("Ignoring unrecognized attribute {}=\"{}\"", remaining.0, remaining.1);
+    }
+
+    let mut fits_header = ListOrderedMultimap::<String, FitsKeyValue>::new();
+    let mut icc_profile = None;
+    let mut rgb_working_space = None;
+    let mut display_function = None;
+    let mut color_filter_array = None;
+    let mut thumbnail = None;
+
+    // TODO: ignore text/<Data> children of nodes with inline or embedded blocks, respectively
+    for mut child in node.get_child_nodes() {
+        child = child.follow_reference(xpath).change_context(context)?;
+
+        macro_rules! parse_optional {
+            ($t:ty, $opt_out:ident) => {
+                {
+                    let parsed = <$t>::parse_node(child).change_context(context)?;
+                    if $opt_out.replace(parsed).is_some() {
+                        tracing::warn!(concat!("Duplicate ", stringify!($t), " element found -- discarding the previous one"));
+                    }
+                }
+            };
+            ($t:ty, $opt_out:ident, full) => {
+                {
+                    let parsed = <$t>::parse_node(child, xpath, opts).change_context(context)?;
+                    if $opt_out.replace(parsed).is_some() {
+                        tracing::warn!(concat!("Duplicate ", stringify!($t), " element found -- discarding the previous one"));
+                    }
+                }
+            };
+        }
+
+        match child.get_name().as_str() {
+            "FITSKeyword" if opts.import_fits_keywords => {
+                let key = FitsKeyword::parse_node(child).change_context(context)?;
+                let val_comm = FitsKeyValue { value: key.value, comment: key.comment };
+                fits_header.append(key.name, val_comm);
+            },
+            "ICCProfile" => parse_optional!(ICCProfile, icc_profile),
+            "RGBWorkingSpace" => parse_optional!(RGBWorkingSpace, rgb_working_space),
+            "DisplayFunction" => parse_optional!(DisplayFunction, display_function),
+            "ColorFilterArray" if !is_thumbnail => parse_optional!(CFA, color_filter_array),
+            "Thumbnail" if !is_thumbnail => parse_optional!(Thumbnail, thumbnail, full),
+            bad => tracing::warn!("Ignoring unrecognized child node <{}>", bad),
+        }
+    }
+
+    //===============//
+    // SANITY CHECKS //
+    //===============//
+
+    if geometry[0] < color_space.num_channels() {
+        return Err(report!(context))
+            .attach_printable(format!(
+                "Insufficient color channels: {color_space} color space requires {}; only found {}",
+                color_space.num_channels(),
+                geometry[0]
+            ));
+    }
+
+    if color_filter_array.is_some() && geometry.len() - 1 != 2 {
+        tracing::warn!("ColorFilterArray element only has a defined meaning for 2D images; found one on a {}D image", geometry.len() - 1);
+    }
+
+    Ok(Image {
+        base: ImageBase {
+            data_block,
+            geometry,
+            sample_format,
+
+            image_type,
+            pixel_storage,
+            color_space,
+            offset,
+            orientation,
+            id,
+            uuid,
+
+            fits_header,
+            icc_profile,
+            rgb_working_space,
+            display_function,
+        },
+        bounds,
+        color_filter_array,
+        thumbnail,
+    })
+}
+
+pub(crate) trait ParseImage: Sized {
+    const TAG_NAME: &'static str;
+}
+
+impl ParseImage for Image {
+    const TAG_NAME: &'static str = "Image";
+}
+
+impl Deref for Image {
+    type Target = ImageBase;
+
+    fn deref(&self) -> &Self::Target {
+        &self.base
+    }
+}
+
+impl Image {
+    pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext, opts: &ReadOptions) -> Result<Self, Report<ParseNodeError>> {
+        parse_image::<Self>(node, xpath, opts)
+    }
 
     pub fn cfa(&self) -> Option<&CFA> {
         self.color_filter_array.as_ref()
+    }
+
+    pub fn thumbnail(&self) -> Option<&Thumbnail> {
+        self.thumbnail.as_ref()
     }
 }
 
