@@ -30,7 +30,7 @@ use std::{
     ffi::CStr,
     fs::File,
     io::{BufReader, Read},
-    path::{Path, PathBuf},
+    path::{Path, PathBuf}, cell::RefCell,
 };
 
 pub mod error;
@@ -105,13 +105,13 @@ impl WriteOptions {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) enum Source {
-    MonolithicFile(PathBuf),
+    MonolithicFile(RefCell<BufReader<File>>),
     DistributedFile(PathBuf),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct XISF {
     source: Source,
     images: Vec<Image>,
@@ -165,16 +165,19 @@ impl XISF {
                 .read_exact(&mut header_buf)
                 .change_context(ReadFileError)
                 .attach_printable_lazy(|| format!("Failed to read {header_length}-byte XML header from file"))?;
-            // TODO: replace with a shared BufReader<File>
-            source = Source::MonolithicFile(filename_path.canonicalize()
-                    .change_context(ReadFileError)
-                    .attach_printable("Failed to canonicalize filename")?);
+            source = Source::MonolithicFile(RefCell::new(reader));
         } else if let Some("xish") = extension.as_deref() {
             header_buf = vec![];
             reader.read_to_end(&mut header_buf)
                 .change_context(ReadFileError)
                 .attach_printable("Failed to read XML header from XISH file")?;
-            source = Source::DistributedFile(filename_path.to_owned());
+            let canon = filename_path.canonicalize()
+                .change_context(ReadFileError)
+                .attach_printable("Failed to canonicalize filename")?;
+            // this unwrap is safe because:
+            // 1. when called on a file, parent() returns the directory that the file is in
+            // 2. we know that a file with the path exists because we just opened it
+            source = Source::DistributedFile(canon.parent().unwrap().to_owned());
         } else if let Some(bad) = extension {
             return Err(report!(ReadFileError))
                 .attach_printable(format!("Unsupported file extension: {bad}"))

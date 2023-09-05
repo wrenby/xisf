@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{RefCell, RefMut},
     collections::HashMap,
     io::{self, Read, BufReader, Seek, Cursor, Write},
     fmt,
@@ -21,7 +21,7 @@ use sha2::{Sha256, Sha512};
 use sha3::{Sha3_256, Sha3_512};
 use strum::{EnumString, Display, EnumVariantNames};
 use url::Url;
-use crate::{error::{ParseValueError, ParseNodeError, ReadDataBlockError}, XISF, Source};
+use crate::{error::{ParseValueError, ParseNodeError, ReadDataBlockError}, Source, XISF};
 
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,7 +135,7 @@ impl DataBlock {
         }
 
         if let Some(checksum) = &self.checksum {
-            let mut reader = self.location.raw_bytes(&root)?;
+            let mut reader = self.location.raw_bytes(root)?;
             match checksum {
                 Checksum::Sha1(digest) => verify_checksum_impl::<Sha1>(digest, &mut reader),
                 Checksum::Sha256(digest) => verify_checksum_impl::<Sha256>(digest, &mut reader),
@@ -149,7 +149,7 @@ impl DataBlock {
     }
 
     /// Will duplicate in-memory if byte-shuffling is enabled
-    pub(crate) fn decompressed_bytes(&self, root: &XISF) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
+    pub(crate) fn decompressed_bytes<'a>(&self, root: &'a XISF) -> Result<Box<dyn Read + 'a>, Report<ReadDataBlockError>> {
         self.location.decompressed_bytes(root, &self.compression)
     }
 }
@@ -305,7 +305,7 @@ impl Location {
     }
 
     /// Literally just a byte stream, with no knowledge of compression, byte shuffling, or checksums
-    pub(crate) fn raw_bytes(&self, xisf: &crate::XISF) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
+    pub(crate) fn raw_bytes<'a>(&self, root: &'a XISF) -> Result<Box<dyn Read + 'a>, Report<ReadDataBlockError>> {
         let base64 = base64_simd::STANDARD;
         match self {
             Self::Plaintext { encoding, text } => {
@@ -318,12 +318,13 @@ impl Location {
                 Ok(Box::new(Cursor::new(buf)))
             },
             Self::Attachment { position, size } => {
-                if let Source::MonolithicFile(filename) = &xisf.source {
-                    let mut file = File::open(filename)
+                if let Source::MonolithicFile(cell) = &root.source {
+                    let mut reader = cell.try_borrow_mut()
+                        .change_context(ReadDataBlockError)
+                        .attach_printable("Reader is in use by another data block")?;
+                    reader.seek(io::SeekFrom::Start(*position))
                         .change_context(ReadDataBlockError)?;
-                    file.seek(io::SeekFrom::Start(*position))
-                        .change_context(ReadDataBlockError)?;
-                    Ok(Box::new(BufReader::new(file).take(*size)))
+                    Ok(Box::new(reader.take_ref(*size)))
                 }  else {
                     Err(report!(ReadDataBlockError))
                         .attach_printable("Data blocks with location=\"attachment\" are only supported for monolithic files")
@@ -331,7 +332,7 @@ impl Location {
             },
             #[allow(unused_variables)]
             Self::Url { url, index_id: None } => {
-                if let Source::DistributedFile(_) = &xisf.source {
+                if let Source::DistributedFile(_) = root.source {
                     match url.scheme() {
                         "file" => {
                             let file = File::open(url.path())
@@ -378,10 +379,9 @@ impl Location {
                 todo!()
             },
             Self::Path { path, index_id: None } => {
-                if let Source::DistributedFile(filename) = &xisf.source {
+                if let Source::DistributedFile(directory) = &root.source {
                     if path.starts_with("@header_dir/") {
-                        // this unwrap is safe because the filename is canonicalized before being stored
-                        let mut path_buf = filename.parent().unwrap().to_owned();
+                        let mut path_buf = directory.clone();
                         // this unwrap is safe because we just checked that it starts with @header_dir/
                         path_buf.push(path.strip_prefix("@header_dir/").unwrap());
                         let file = File::open(path_buf)
@@ -405,8 +405,8 @@ impl Location {
     }
 
     /// Will duplicate in-memory if byte-shuffling is enabled
-    pub(crate) fn decompressed_bytes(&self, xisf: &crate::XISF, compression: &Option<Compression>) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
-        let raw = self.raw_bytes(xisf)?;
+    pub(crate) fn decompressed_bytes<'a>(&self, root: &'a XISF, compression: &Option<Compression>) -> Result<Box<dyn Read + 'a>, Report<ReadDataBlockError>> {
+        let raw = self.raw_bytes(root)?;
         if let Some(compression) = compression {
             let uncompressed_sizes: Vec<_> = compression.sub_blocks.0.iter().map(|tup| tup.0).collect();
             match compression.algorithm {
@@ -477,6 +477,41 @@ impl Location {
             Self::Url { url, .. } if url.has_host() => true,
             _ => false,
         }
+    }
+}
+
+///
+trait ReadTakeRefExt<'a> {
+    type Inner;
+    fn take_ref(self, limit: u64) -> TakeRef<'a, Self::Inner>;
+}
+impl<'a, R: Read> ReadTakeRefExt<'a> for RefMut<'a, R> {
+    type Inner = R;
+    fn take_ref(self, limit: u64) -> TakeRef<'a, Self::Inner> {
+        TakeRef {
+            inner: self,
+            limit,
+        }
+    }
+}
+
+/// Identical to [`std::io::Take`], except it works on a [`RefMut`]
+struct TakeRef<'a, T> {
+    inner: RefMut<'a, T>,
+    limit: u64,
+}
+impl<'a, T: Read> Read for TakeRef<'a, T> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // Don't call into inner reader at all at EOF because it may still block
+        if self.limit == 0 {
+            return Ok(0);
+        }
+
+        let min = std::cmp::min(buf.len() as u64, self.limit) as usize;
+        let n = self.inner.read(&mut buf[..min])?;
+        assert!(n as u64 <= self.limit, "number of read bytes exceeds limit");
+        self.limit -= n as u64;
+        Ok(n)
     }
 }
 
@@ -939,7 +974,7 @@ mod tests {
             compression: None,
         };
         let xisf = XISF {
-            source: Source::DistributedFile("tests/files/test.xish".into()),
+            source: Source::DistributedFile("tests/files/".into()),
             images: vec![],
         };
         let mut reader = local.location.raw_bytes(&xisf).unwrap();
@@ -966,7 +1001,7 @@ mod tests {
             compression: None,
         };
         let xisf = XISF {
-            source: Source::DistributedFile("tests/files/test.xish".into()),
+            source: Source::DistributedFile("tests/files/".into()),
             images: vec![],
         };
         let mut reader = http.location.raw_bytes(&xisf).unwrap();
@@ -1000,7 +1035,7 @@ mod tests {
             compression: None,
         };
         let xisf = XISF {
-            source: Source::DistributedFile("tests/files/test.xish".into()),
+            source: Source::DistributedFile("tests/files/".into()),
             images: vec![],
         };
         let mut reader = ftp.location.raw_bytes(&xisf).unwrap();
