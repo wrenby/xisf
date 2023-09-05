@@ -3,7 +3,7 @@ use std::{
     fmt::{Display, Formatter},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParseValueError(pub &'static str);
 impl Display for ParseValueError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -12,7 +12,7 @@ impl Display for ParseValueError {
 }
 impl Error for ParseValueError {}
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReadFitsKeyError {
     KeyNotFound,
     InvalidFormat,
@@ -33,7 +33,7 @@ impl Error for ReadFitsKeyError {}
 /// Enum variants are listed in order of precedence, e.g. if the parser encounters the node
 /// `<Reference uid="invalid uid" ref="invalid uid" />` (a recursive reference and an invalid uid)
 /// attempting to resolve the reference will return `InvalidUid` instead of `Recursive`
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReferenceError {
     MissingRef,
     InvalidUid,
@@ -48,17 +48,48 @@ impl Display for ReferenceError {
 }
 impl Error for ReferenceError {}
 
-#[derive(Clone, Copy, Debug)]
-pub struct ParseNodeError(pub &'static str);
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ParseNodeErrorKind {
+    InvalidReference,
+    MissingAttr,
+    InvalidAttr,
+    MissingChild,
+    /// not used in a general case, only for when the child itself doesn't return its own ParseNodeError, such as
+    /// the text nodes of embedded [`DataBlock`](crate::data_block::DataBlock)s
+    InvalidChild,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ParseNodeError {
+    pub tag: &'static str,
+    pub kind: ParseNodeErrorKind,
+}
+impl ParseNodeError {
+    pub(crate) const fn new(tag: &'static str, kind: ParseNodeErrorKind) -> Self {
+        Self {
+            tag,
+            kind,
+        }
+    }
+}
 impl Display for ParseNodeError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        f.write_fmt(format_args!("Failed to parse <{}> node in XML header", self.0))
+        f.write_fmt(format_args!("Failed to parse <{}> node in XML header: ", self.tag))?;
+
+        use ParseNodeErrorKind::*;
+        match self.kind {
+            InvalidReference => f.write_str("Invalid child <Reference> node"),
+            MissingAttr => f.write_str("Missing attribute"),
+            InvalidAttr => f.write_str("Invalid Attribute"),
+            MissingChild => f.write_str("Missing child node"),
+            InvalidChild => f.write_str("Invalid child node"),
+        }
     }
 }
 impl Error for ParseNodeError {}
 
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ReadDataBlockError;
 impl Display for ReadDataBlockError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -67,7 +98,7 @@ impl Display for ReadDataBlockError {
 }
 impl Error for ReadDataBlockError {}
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ReadFileError;
 impl Display for ReadFileError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

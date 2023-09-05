@@ -1,9 +1,16 @@
 use std::collections::HashMap;
 
-use error_stack::{Report, report, ResultExt};
+use error_stack::{Report, report, Result, ResultExt};
 use libxml::readonly::RoNode;
 
-use crate::error::ParseNodeError;
+use crate::error::{ParseNodeError, ParseNodeErrorKind::{self, *}};
+
+fn report(kind: ParseNodeErrorKind) -> Report<ParseNodeError> {
+    report!(context(kind))
+}
+const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
+    ParseNodeError::new("RGBWorkingSpace", kind)
+}
 
 /// Describes the location of the red, green, and blue primary colors in the CIE 1931 chromaticity diagram using the
 /// [xyY coordinate system](https://en.wikipedia.org/wiki/CIE_1931_color_space#CIE_xy_chromaticity_diagram_and_the_CIE_xyY_color_space)
@@ -60,8 +67,7 @@ impl RGBWorkingSpace {
     //         // this unwrap is safe because we know the size of the product of a 3x3 and a 3x1 matrix is 3x1
     //         .try_into().unwrap()
     // }
-    pub(crate) fn parse_node(node: RoNode) -> Result<Self, Report<ParseNodeError>> {
-        const CONTEXT: ParseNodeError = ParseNodeError("RGBWorkingSpace");
+    pub(crate) fn parse_node(node: RoNode) -> Result<Self, ParseNodeError> {
         let _span_guard = tracing::debug_span!("RGBWorkingSpace");
 
         let mut attrs = node.get_attributes();
@@ -76,37 +82,37 @@ impl RGBWorkingSpace {
                     let number = other
                         .trim()
                         .parse::<f32>()
-                        .change_context(CONTEXT)
+                        .change_context(context(InvalidAttr))
                         .attach_printable_lazy(|| format!("Invalid gamma attribute: expected either \"sRGB\" or a floating-point value greater than zero, found {other}"))?;
                     if number > 0.0 {
                         Linearization::Gamma(number)
                     } else {
-                        return Err(report!(CONTEXT)).attach_printable(format!("Invalid gamma attribute: must be greater than zero, found {other}"))
+                        return Err(report(InvalidAttr)).attach_printable(format!("Invalid gamma attribute: must be greater than zero, found {other}"))
                     }
                 },
             }
         } else {
-            return Err(report!(CONTEXT)).attach_printable("Missing gamma attribute")
+            return Err(report(MissingAttr)).attach_printable("Missing gamma attribute")
         };
 
-        fn parse_coordinates(attr: &str, attrs: &mut HashMap<String, String>) -> Result<[f32; 3], Report<ParseNodeError>> {
+        fn parse_coordinates(attr: &str, attrs: &mut HashMap<String, String>) -> Result<[f32; 3], ParseNodeError> {
             if let Some(val) = attrs.remove(attr) {
                 match val.split(":").collect::<Vec<_>>().as_slice() {
                     &[r, g, b] => Ok([
                         r.trim().parse::<f32>()
-                            .change_context(CONTEXT)
+                            .change_context(context(InvalidAttr))
                             .attach_printable_lazy(|| format!("Invalid {attr} attribute: failed to parse red coordinate"))?,
                         g.trim().parse::<f32>()
-                            .change_context(CONTEXT)
+                            .change_context(context(InvalidAttr))
                             .attach_printable_lazy(|| format!("Invalid {attr} attribute: failed to parse green coordinate"))?,
                         b.trim().parse::<f32>()
-                            .change_context(CONTEXT)
+                            .change_context(context(InvalidAttr))
                             .attach_printable_lazy(|| format!("Invalid {attr} attribute: failed to parse blue coordinate"))?,
                     ]),
-                    _bad => Err(report!(CONTEXT)).attach_printable(format!("Invalid {attr} attribute: expected pattern r:g:b, found {val}")),
+                    _bad => Err(report(InvalidAttr)).attach_printable(format!("Invalid {attr} attribute: expected pattern r:g:b, found {val}")),
                 }
             } else {
-                Err(report!(CONTEXT)).attach_printable(format!("Missing {attr} attribute"))
+                Err(report(MissingAttr)).attach_printable(format!("Missing {attr} attribute"))
             }
         }
 

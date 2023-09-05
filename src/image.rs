@@ -16,7 +16,7 @@ use strum::{Display, EnumString, EnumVariantNames, VariantNames};
 use uuid::Uuid;
 use crate::{
     data_block::{DataBlock, ByteOrder},
-    error::{ReadDataBlockError, ParseValueError, ReadFitsKeyError},
+    error::{ReadDataBlockError, ParseValueError, ReadFitsKeyError, ParseNodeErrorKind::*},
     is_valid_id,
     ReadOptions,
     ParseNodeError, MaybeReference,
@@ -40,6 +40,9 @@ pub use display_function::*;
 mod color_filter_array;
 pub use color_filter_array::*;
 
+mod resolution;
+pub use resolution::*;
+
 mod thumbnail;
 pub use thumbnail::*;
 
@@ -50,7 +53,7 @@ pub use thumbnail::*;
 #[derive(Clone, Debug)]
 pub struct ImageBase {
     data_block: DataBlock,
-    pub geometry: Vec<usize>,
+    geometry: Vec<usize>,
     pub sample_format: SampleFormat,
 
     pub image_type: Option<ImageType>,
@@ -65,6 +68,7 @@ pub struct ImageBase {
     icc_profile: Option<ICCProfile>,
     rgb_working_space: Option<RGBWorkingSpace>,
     display_function: Option<DisplayFunction>,
+    resolution: Option<Resolution>,
 }
 impl ImageBase {
     /// The number of dimensions in this image
@@ -74,6 +78,16 @@ impl ImageBase {
     pub fn num_dimensions(&self) -> usize {
         self.geometry.len() - 1
     }
+
+    /// A slice of dimension sizes, in row-major order
+    ///
+    /// For a 2D image, this means height is before width.
+    /// The channel axis is not considered a dimension.
+    #[inline]
+    pub fn dimensions(&self) -> &[usize] {
+        &self.geometry[1..]
+    }
+
     /// The total number of channels in this image, both color and alpha
     #[inline]
     pub fn num_channels(&self) -> usize {
@@ -222,6 +236,10 @@ impl ImageBase {
     pub fn display_function(&self) -> Option<&DisplayFunction> {
         self.display_function.as_ref()
     }
+
+    pub fn resolution(&self) -> Option<&Resolution> {
+        self.resolution.as_ref()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -237,67 +255,71 @@ pub struct Image {
 fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts: &ReadOptions) -> Result<Image, Report<ParseNodeError>> {
     let is_thumbnail = TypeId::of::<T>() == TypeId::of::<Thumbnail>();
 
-    let context: ParseNodeError = ParseNodeError(T::TAG_NAME);
+    let context = |kind| -> ParseNodeError {
+        ParseNodeError::new(T::TAG_NAME, kind)
+    };
+    let report = |kind| -> Report<ParseNodeError> {
+        report!(ParseNodeError::new(T::TAG_NAME, kind))
+    };
+
     // * this is mutable because we use .remove() instead of .get()
     // that way, after we've extracted everything we recognize,
     // we can just iterate through what remains and emit warnings
     // saying we don't know what so-and-so attribute means
     let mut attrs = node.get_attributes();
 
-    let data_block = DataBlock::parse_node(node, context, &mut attrs)?
-        .ok_or(report!(context))
-        .attach_printable_lazy(|| format!("Missing location attribute: {} elements must have a data block", T::TAG_NAME))?;
+    let data_block = DataBlock::parse_node(node, T::TAG_NAME, &mut attrs)?;
 
     let mut geometry: Vec<usize> = vec![];
     if let Some(dims) = attrs.remove("geometry") {
         for i in dims.split(":") {
             let dim = parse_auto_radix::<usize>(i.trim())
-                .change_context(context)
+                .change_context(context(InvalidAttr))
                 .attach_printable("Invalid geometry attribute: failed to parse dimension/channel count")
                 .attach_printable_lazy(|| format!("Expected pattern \"{{dim_1}}:...:{{dim_N}}:{{channel_count}}\" (for N>=1 and all values > 0), found \"{i}\""))?;
             if dim > 0 {
                 geometry.push(dim);
             } else {
-                return Err(report!(context))
+                return Err(report(InvalidAttr))
                     .attach_printable("Invalid geometry attribute: dimensions and channel count all must be nonzero")
             }
         }
         if geometry.len() < 2 {
-            return Err(report!(context))
+            return Err(report(InvalidAttr))
                 .attach_printable("Invalid geometry attribute: must have at least one dimension and one channel")
         } else {
             // convert to row-major order
             geometry = geometry.into_iter().rev().collect();
         }
     } else {
-        return Err(report!(context)).attach_printable("Missing geometry attribute")
+        return Err(report(MissingAttr)).attach_printable("Missing geometry attribute")
     }
 
     let sample_format = attrs.remove("sampleFormat")
-        .ok_or(report!(context))
+        .ok_or(report(MissingAttr))
         .attach_printable("Missing sampleFormat attribute")
         .and_then(|val| {
             val.parse::<SampleFormat>()
-                .change_context(context)
+                .change_context(context(InvalidAttr))
                 .attach_printable_lazy(||
                     format!("Invalid sampleFormat attribute: expected one of {:?}, found {val}", SampleFormat::VARIANTS))
         })?;
 
     let bounds = if let Some(val) = attrs.remove("bounds") {
         let (low, high) = val.split_once(":")
-            .ok_or(report!(context))
+            .ok_or(report(InvalidAttr))
             .attach_printable_lazy(|| "Invalid bounds attribute: expected pattern \"low:high\", found \"{val}\"")?;
 
         Some(SampleBounds {
             low: low.trim().parse::<f64>()
-                .change_context(context)
+                .change_context(context(InvalidAttr))
                 .attach_printable("Invalid bounds attribute: failed to parse lower bound")?,
             high: high.trim().parse::<f64>()
-                .change_context(context)
+                .change_context(context(InvalidAttr))
                 .attach_printable("Invalid bounds attribute: failed to parse upper bound")?
         })
     } else if sample_format.requires_bounds() {
-        return Err(report!(context))
+        return Err(report(MissingAttr))
             .attach_printable(format!("Missing bounds attribute: required when using using {sample_format} sample format"));
     } else {
         None
@@ -305,7 +327,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
 
     let image_type = if let Some(val) = attrs.remove("imageType") {
         Some(val.parse::<ImageType>()
-            .change_context(context)
+            .change_context(context(InvalidAttr))
             .attach_printable_lazy(||
                 format!("Invalid imageType attribute: expected one of {:?}, found {val}", ImageType::VARIANTS))?)
     } else {
@@ -314,7 +336,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
 
     let pixel_storage = if let Some(val) = attrs.remove("pixelStorage") {
         val.parse::<PixelStorage>()
-            .change_context(context)
+            .change_context(context(InvalidAttr))
             .attach_printable_lazy(||
                 format!("Invalid pixelStorage attribute: expected one of {:?}, found {val}", PixelStorage::VARIANTS)
             )?
@@ -324,7 +346,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
 
     let color_space = if let Some(val) = attrs.remove("colorSpace") {
         val.parse::<ColorSpace>()
-            .change_context(context)
+            .change_context(context(InvalidAttr))
             .attach_printable_lazy(||
                 format!("Invalid colorSpace attribute: expected one of {:?}, found {val}", ColorSpace::VARIANTS)
             )?
@@ -334,10 +356,10 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
 
     let offset = if let Some(val) = attrs.remove("offset") {
         let maybe_negative = val.parse::<f64>()
-            .change_context(context)
+            .change_context(context(InvalidAttr))
             .attach_printable("Invalid offset attribute")?;
         if maybe_negative < 0.0 {
-            return Err(report!(context)).attach_printable("Invalid offset attribute: must be zero or greater")
+            return Err(report!(context(InvalidAttr))).attach_printable("Invalid offset attribute: must be zero or greater")
         } else {
             maybe_negative
         }
@@ -347,7 +369,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
 
     let orientation = if let Some(val) = attrs.remove("orientation") {
         val.parse::<Orientation>()
-            .change_context(context)
+            .change_context(context(InvalidAttr))
             .attach_printable("Invalid orientation attribute")?
     } else {
         Default::default()
@@ -356,7 +378,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
     let id = attrs.remove("id");
     if let Some(id) = &id {
         if !is_valid_id(id) {
-            return Err(report!(context)).attach_printable(
+            return Err(report(InvalidAttr)).attach_printable(
                 format!("Invalid id attribute: must match regex [_a-zA-Z][_a-zA-Z0-9]*, found \"{id}\"")
             )
         }
@@ -364,7 +386,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
 
     let uuid = if let Some(val) = attrs.remove("uuid") {
         Some(val.parse::<Uuid>()
-            .change_context(context)
+            .change_context(context(InvalidAttr))
             .attach_printable("Invalid uuid attribute")?)
     } else {
         None
@@ -379,16 +401,17 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
     let mut rgb_working_space = None;
     let mut display_function = None;
     let mut color_filter_array = None;
+    let mut resolution = None;
     let mut thumbnail = None;
 
     // TODO: ignore text/<Data> children of nodes with inline or embedded blocks, respectively
     for mut child in node.get_child_nodes() {
-        child = child.follow_reference(xpath).change_context(context)?;
+        child = child.follow_reference(xpath).change_context(context(InvalidReference))?;
 
         macro_rules! parse_optional {
             ($t:ty, $opt_out:ident) => {
                 {
-                    let parsed = <$t>::parse_node(child).change_context(context)?;
+                    let parsed = <$t>::parse_node(child)?;
                     if $opt_out.replace(parsed).is_some() {
                         tracing::warn!(concat!("Duplicate ", stringify!($t), " element found -- discarding the previous one"));
                     }
@@ -396,7 +419,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
             };
             ($t:ty, $opt_out:ident, full) => {
                 {
-                    let parsed = <$t>::parse_node(child, xpath, opts).change_context(context)?;
+                    let parsed = <$t>::parse_node(child, xpath, opts)?;
                     if $opt_out.replace(parsed).is_some() {
                         tracing::warn!(concat!("Duplicate ", stringify!($t), " element found -- discarding the previous one"));
                     }
@@ -406,7 +429,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
 
         match child.get_name().as_str() {
             "FITSKeyword" if opts.import_fits_keywords => {
-                let key = FitsKeyword::parse_node(child).change_context(context)?;
+                let key = FitsKeyword::parse_node(child)?;
                 let val_comm = FitsKeyValue { value: key.value, comment: key.comment };
                 fits_header.append(key.name, val_comm);
             },
@@ -414,6 +437,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
             "RGBWorkingSpace" => parse_optional!(RGBWorkingSpace, rgb_working_space),
             "DisplayFunction" => parse_optional!(DisplayFunction, display_function),
             "ColorFilterArray" if !is_thumbnail => parse_optional!(CFA, color_filter_array),
+            "Resolution" => parse_optional!(Resolution, resolution),
             "Thumbnail" if !is_thumbnail => parse_optional!(Thumbnail, thumbnail, full),
             bad => tracing::warn!("Ignoring unrecognized child node <{}>", bad),
         }
@@ -424,7 +448,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
     //===============//
 
     if geometry[0] < color_space.num_channels() {
-        return Err(report!(context))
+        return Err(report(InvalidAttr))
             .attach_printable(format!(
                 "Insufficient color channels: {color_space} color space requires {}; only found {}",
                 color_space.num_channels(),
@@ -454,6 +478,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
             icc_profile,
             rgb_working_space,
             display_function,
+            resolution,
         },
         bounds,
         color_filter_array,

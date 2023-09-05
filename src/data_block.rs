@@ -11,7 +11,7 @@ use std::{
 };
 
 use digest::Digest;
-use error_stack::{Report, ResultExt, report};
+use error_stack::{Report, Result, ResultExt, report};
 use flate2::read::ZlibDecoder;
 use libxml::{readonly::RoNode, tree::NodeType};
 use ndarray::Array2;
@@ -21,8 +21,16 @@ use sha2::{Sha256, Sha512};
 use sha3::{Sha3_256, Sha3_512};
 use strum::{EnumString, Display, EnumVariantNames};
 use url::Url;
-use crate::{error::{ParseValueError, ParseNodeError, ReadDataBlockError}, XISF, Source};
-
+use crate::{
+    error::{
+        ParseValueError,
+        ParseNodeError,
+        ParseNodeErrorKind::{self, *},
+        ReadDataBlockError
+    },
+    XISF,
+    Source
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataBlock {
@@ -32,18 +40,23 @@ pub struct DataBlock {
     pub compression: Option<Compression>,
 }
 impl DataBlock {
-    // returns Ok(Some(_)) if a data block was successfully parsed
-    // returns Ok(None) if there is no data block to parse
-    // returns Err(_) if there was an error parsing the data block
+    // returns Ok(_) if a data block was successfully parsed
+    // returns Err(_) if there was an error parsing the data block, or there was no data block to parse
     // passing &mut attrs isn't for the benefit of this function, but the caller function
     // (helps cut down on unnecessary "ignoring unrecognized attribute" warnings)
-    pub(crate) fn parse_node(node: RoNode, context: ParseNodeError, attrs: &mut HashMap<String, String>) -> Result<Option<Self>, Report<ParseNodeError>> {
-        let _span_guard = tracing::debug_span!("DataBlock");
-        if let Some(location) = Location::parse_node(node, context, attrs)? {
+    pub(crate) fn parse_node(node: RoNode, tag: &'static str, attrs: &mut HashMap<String, String>) -> Result<Self, ParseNodeError> {
+        let context = |kind| -> ParseNodeError {
+            ParseNodeError::new(tag, kind)
+        };
+        let report = |kind: ParseNodeErrorKind| -> Report<ParseNodeError> {
+            report!(ParseNodeError::new(tag, kind))
+        };
+
+        if let Some(location) = Location::parse_node(node, tag, attrs)? {
             let byte_order = match attrs.remove("byteOrder") {
                 Some(byte_order) => {
                     byte_order.parse::<ByteOrder>()
-                        .change_context(context)
+                        .change_context(context(InvalidAttr))
                         .attach_printable_lazy(|| format!("Invalid byteOrder attribute: expected one of [big, little], found {byte_order}"))?
                 },
                 None => Default::default(),
@@ -52,7 +65,7 @@ impl DataBlock {
             let checksum = match attrs.remove("checksum") {
                 Some(checksum) => Some(
                     checksum.parse::<Checksum>()
-                        .change_context(context)
+                        .change_context(context(InvalidAttr))
                         .attach_printable("Invalid checksum attribute")?
                 ),
                 None => None,
@@ -61,7 +74,7 @@ impl DataBlock {
             let compression_attr = match attrs.remove("compression") {
                 Some(compression) => Some(
                     compression.parse::<CompressionAttr>()
-                        .change_context(context)
+                        .change_context(context(InvalidAttr))
                         .attach_printable("Invalid compression attribute")?
                 ),
                 None => None,
@@ -70,7 +83,7 @@ impl DataBlock {
             let sub_blocks = match attrs.remove("subblocks") {
                 Some(compression) => {
                     compression.parse::<SubBlocks>()
-                        .change_context(context)
+                        .change_context(context(InvalidAttr))
                         .attach_printable("Invalid subblocks attribute")?
                 },
                 None => SubBlocks(vec![]),
@@ -89,7 +102,7 @@ impl DataBlock {
                     (Some(attr), _) => {
                         let uncompressed_size: usize = sub_blocks.0.iter().map(|(_, un)| un).sum();
                         if uncompressed_size != attr.uncompressed_size() {
-                            return Err(report!(context))
+                            return Err(report(InvalidAttr))
                                 .attach_printable("Compression sub-blocks must sum to the uncompressed size specified in the compression attribute")
                         }
                         Some(Compression {
@@ -106,19 +119,19 @@ impl DataBlock {
                 }
             };
 
-            Ok(Some(DataBlock {
+            Ok(DataBlock {
                 location,
                 byte_order,
                 checksum,
                 compression,
-            }))
+            })
         } else {
-            Ok(None)
+            Err(context(MissingAttr)).attach_printable(format!("Missing location attribute: {tag} elements must have a data block"))
         }
     }
 
-    pub(crate) fn verify_checksum(&self, root: &XISF) -> Result<(), Report<ReadDataBlockError>> {
-        fn verify_checksum_impl<D: Digest + Write>(expected: &[u8], reader: &mut impl Read) -> Result<(), Report<ReadDataBlockError>> {
+    pub(crate) fn verify_checksum(&self, root: &XISF) -> Result<(), ReadDataBlockError> {
+        fn verify_checksum_impl<D: Digest + Write>(expected: &[u8], reader: &mut impl Read) -> Result<(), ReadDataBlockError> {
             let mut hasher = D::new();
             std::io::copy(reader, &mut hasher)
                 .change_context(ReadDataBlockError)
@@ -149,7 +162,7 @@ impl DataBlock {
     }
 
     /// Will duplicate in-memory if byte-shuffling is enabled
-    pub(crate) fn decompressed_bytes(&self, root: &XISF) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
+    pub(crate) fn decompressed_bytes(&self, root: &XISF) -> Result<Box<dyn Read>, ReadDataBlockError> {
         self.location.decompressed_bytes(root, &self.compression)
     }
 }
@@ -183,17 +196,23 @@ impl Location {
     /// returns Err(_) if there was an error parsing the data block location
     /// passing &mut attrs isn't for the benefit of this function, but the caller function
     /// (helps cut down on unnecessary "ignoring unrecognized attribute" warnings)
-    pub(crate) fn parse_node(node: RoNode, context: ParseNodeError, attrs: &mut HashMap<String, String>) -> Result<Option<Self>, Report<ParseNodeError>> {
-        let _span_guard = tracing::debug_span!("location");
+    pub(crate) fn parse_node(node: RoNode, tag: &'static str, attrs: &mut HashMap<String, String>) -> Result<Option<Self>, ParseNodeError> {
+        let context = |kind| -> ParseNodeError {
+            ParseNodeError::new(tag, kind)
+        };
+        let report = |kind: ParseNodeErrorKind| -> Report<ParseNodeError> {
+            report!(ParseNodeError::new(tag, kind))
+        };
+
         if let Some(attr) = attrs.remove("location") {
             match attr.split(":").collect::<Vec<_>>().as_slice() {
                 &["inline", encoding] => {
                     let encoding = encoding.parse::<TextEncoding>()
-                        .change_context(context)
+                        .change_context(context(InvalidAttr))
                         .attach_printable("Invalid location attribute: failed to parse inline encoding")?;
 
                     match node.get_child_nodes().as_slice() {
-                        [] => Err(report!(context)).attach_printable("Missing child text node: required for inline data blocks"),
+                        [] => Err(report(MissingChild)).attach_printable("Missing child text node: required for inline data blocks"),
                         [text] if text.get_type() == Some(NodeType::TextNode) => {
                             let mut text = text.get_content();
                             text.retain(|c| !c.is_whitespace());
@@ -204,7 +223,7 @@ impl Location {
                                 }
                             ))
                         },
-                        _other => Err(report!(context)).attach_printable("XISF Elements with inline data blocks are not permitted to have non-text child nodes"),
+                        _other => Err(report(InvalidChild)).attach_printable("XISF Elements with inline data blocks are not permitted to have non-text child nodes"),
                     }
                 },
                 &["embedded"] =>  {
@@ -214,15 +233,15 @@ impl Location {
                         .collect::<Vec<_>>()
                         .as_slice()
                     {
-                        [] => Err(report!(context)).attach_printable("Missing embedded <Data> node: required for embedded data block location"),
+                        [] => Err(report(MissingChild)).attach_printable("Missing embedded <Data> node: required for embedded data block location"),
                         [one] => {
                             if let Some(encoding) = one.get_attribute("encoding") {
                                 let encoding = encoding.parse::<TextEncoding>()
-                                    .change_context(context)
+                                    .change_context(context(InvalidAttr))
                                     .attach_printable("Invalid encoding attribute in embedded <Data> node")?;
 
                                 match one.get_child_nodes().as_slice() {
-                                    [] => Err(report!(context)).attach_printable("Embedded <Data> node missing child text node"),
+                                    [] => Err(report(MissingChild)).attach_printable("Embedded <Data> node missing child text node"),
                                     [text] if text.get_type() == Some(NodeType::TextNode) => {
                                         let mut text = text.get_content();
                                         text.retain(|c| !c.is_whitespace());
@@ -233,22 +252,22 @@ impl Location {
                                             }
                                         ))
                                     },
-                                    _other => Err(report!(context)).attach_printable("Embedded <Data> nodes are not permitted to have non-text child nodes"),
+                                    _other => Err(report(InvalidChild)).attach_printable("Embedded <Data> nodes are not permitted to have non-text child nodes"),
                                 }
                             } else {
-                                Err(report!(context)).attach_printable("Embedded <Data> node missing encoding attribute")
+                                Err(report(MissingAttr)).attach_printable("Embedded <Data> node missing encoding attribute")
                             }
                         },
-                        _many => Err(report!(context)).attach_printable("Found more than one embedded <Data> node"),
+                        _many => Err(report(InvalidChild)).attach_printable("Found more than one embedded <Data> node"),
                     }
                 },
                 &["attachment", position, size] => {
                     Ok(Some(Self::Attachment {
                         position: parse_auto_radix::<u64>(position.trim())
-                            .change_context(context)
+                            .change_context(context(InvalidAttr))
                             .attach_printable("Invalid location attribute: failed to parse position of attached data block")?,
                         size: parse_auto_radix::<u64>(size.trim())
-                            .change_context(context)
+                            .change_context(context(InvalidAttr))
                             .attach_printable("Invalid location attribute: failed to parse size of attached data block")?,
                     }))
                 },
@@ -258,7 +277,7 @@ impl Location {
                     Ok(Some(Self::Url {
                         // the slice indexing trims "url(" from the front and ")" from the end
                         url: Url::parse(&url[4..url.len()-1])
-                            .change_context(context)
+                            .change_context(context(InvalidAttr))
                             .attach_printable("Invalid location attribute: failed to parse URL of external data block")?,
                         index_id: None,
                     }))
@@ -269,10 +288,10 @@ impl Location {
                     Ok(Some(Self::Url {
                         // the slice indexing trims "url(" from the front and ")" from the end
                         url: Url::parse(&url[4..url.len()-1])
-                            .change_context(context)
+                            .change_context(context(InvalidAttr))
                             .attach_printable("Invalid location attribute: failed to parse URL of external data block")?,
                         index_id: Some(parse_auto_radix::<u64>(index_id.trim())
-                            .change_context(context)
+                            .change_context(context(InvalidAttr))
                             .attach_printable("Invalid location attribute: failed to parse index-id of external data block")?),
                     }))
                 },
@@ -292,11 +311,11 @@ impl Location {
                         // the slice indexing trims "path(" from the front and ")" from the end
                         path: PathBuf::from(&path[5..path.len()-1]),
                         index_id: Some(parse_auto_radix::<u64>(index_id.trim())
-                            .change_context(context)
+                            .change_context(context(InvalidAttr))
                             .attach_printable("Invalid location attribute: failed to parse index-id of external data block")?),
                     }))
                 },
-                _bad => Err(report!(context)).attach_printable("Invalid location attribute: unrecognized pattern")
+                _bad => Err(report(InvalidAttr)).attach_printable("Invalid location attribute: unrecognized pattern")
                     .attach_printable(format!("Expected one of [inline:encoding, embedded, attachment:position:size, url(...), url(...):index-id, path(...), path(...):index-id], found {attr}"))
             }
         } else {
@@ -305,7 +324,7 @@ impl Location {
     }
 
     /// Literally just a byte stream, with no knowledge of compression, byte shuffling, or checksums
-    pub(crate) fn raw_bytes(&self, xisf: &crate::XISF) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
+    pub(crate) fn raw_bytes(&self, xisf: &crate::XISF) -> Result<Box<dyn Read>, ReadDataBlockError> {
         let base64 = base64_simd::STANDARD;
         match self {
             Self::Plaintext { encoding, text } => {
@@ -378,10 +397,9 @@ impl Location {
                 todo!()
             },
             Self::Path { path, index_id: None } => {
-                if let Source::DistributedFile(filename) = &xisf.source {
+                if let Source::DistributedFile(directory) = &xisf.source {
                     if path.starts_with("@header_dir/") {
-                        // this unwrap is safe because the filename is canonicalized before being stored
-                        let mut path_buf = filename.parent().unwrap().to_owned();
+                        let mut path_buf = directory.clone();
                         // this unwrap is safe because we just checked that it starts with @header_dir/
                         path_buf.push(path.strip_prefix("@header_dir/").unwrap());
                         let file = File::open(path_buf)
@@ -405,7 +423,7 @@ impl Location {
     }
 
     /// Will duplicate in-memory if byte-shuffling is enabled
-    pub(crate) fn decompressed_bytes(&self, xisf: &crate::XISF, compression: &Option<Compression>) -> Result<Box<dyn Read>, Report<ReadDataBlockError>> {
+    pub(crate) fn decompressed_bytes(&self, xisf: &crate::XISF, compression: &Option<Compression>) -> Result<Box<dyn Read>, ReadDataBlockError> {
         let raw = self.raw_bytes(xisf)?;
         if let Some(compression) = compression {
             let uncompressed_sizes: Vec<_> = compression.sub_blocks.0.iter().map(|tup| tup.0).collect();
@@ -450,7 +468,7 @@ impl Location {
 
     // TODO: does it make any sense to unshuffle in-place reading one byte at a time?
     // would have to make a wrapper with a custom Read impl to even test it
-    fn unshuffle<'a>(mut reader: impl Read + 'a, compression: &Compression) -> Result<Box<dyn Read + 'a>, Report<ReadDataBlockError>> {
+    fn unshuffle<'a>(mut reader: impl Read + 'a, compression: &Compression) -> Result<Box<dyn Read + 'a>, ReadDataBlockError> {
         match compression.byte_shuffling {
             // byte shuffling is a nop for 1 or 0 size items
             // not sure why any implementation would encode it like this, but best to save the clone I guess
@@ -645,10 +663,10 @@ impl fmt::Display for Checksum {
 }
 impl FromStr for Checksum {
     type Err = Report<ParseValueError>;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, ParseValueError> {
         const CONTEXT: ParseValueError = ParseValueError("Checksum");
 
-        fn from_hex(digest: &str, out: &mut [u8]) -> Result<(), Report<ParseValueError>> {
+        fn from_hex(digest: &str, out: &mut [u8]) -> Result<(), ParseValueError> {
             use hex_simd::AsOut;
             // the comment on this function says it panics if the dest buffer is not large enough,
             // but this is not true -- it returns an Err
@@ -796,11 +814,11 @@ impl fmt::Display for CompressionAttr {
 }
 impl FromStr for CompressionAttr {
     type Err = Report<ParseValueError>;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, ParseValueError> {
         const CONTEXT: ParseValueError = ParseValueError("Compression");
         const UNCOMPRESSED_SIZE_ERR: &'static str = "Failed to read uncompressed size";
         const ITEM_SIZE_ERR: &'static str = "Failed to read byte shuffling item size";
-        fn parse_size(size: &str, err_msg: &'static str) -> Result<usize, Report<ParseValueError>> {
+        fn parse_size(size: &str, err_msg: &'static str) -> Result<usize, ParseValueError> {
             parse_auto_radix::<usize>(size.trim())
                 .change_context(CONTEXT)
                 .attach_printable(err_msg)
@@ -872,7 +890,7 @@ impl fmt::Display for SubBlocks {
 }
 impl FromStr for SubBlocks {
     type Err = Report<ParseValueError>;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, ParseValueError> {
         const CONTEXT: ParseValueError = ParseValueError("Compression Sub-Blocks");
         let mut sub_blocks = vec![];
         for token in s.split(":") {
@@ -903,7 +921,7 @@ pub enum CompressionLevel {
     Value(NonZeroU8), // minimum: 1, maximum: 100
 }
 impl CompressionLevel {
-    pub fn new(level: u8) -> Result<Self, Report<ParseValueError>> {
+    pub fn new(level: u8) -> Result<Self, ParseValueError> {
         match level {
             0 => Ok(Self::Auto),
             (1..=100) => Ok(Self::Value(NonZeroU8::new(level).unwrap())), // safe because the match arm range does not contain 0
@@ -939,7 +957,7 @@ mod tests {
             compression: None,
         };
         let xisf = XISF {
-            source: Source::DistributedFile("tests/files/test.xish".into()),
+            source: Source::DistributedFile("tests/files/".into()),
             images: vec![],
         };
         let mut reader = local.location.raw_bytes(&xisf).unwrap();
@@ -966,7 +984,7 @@ mod tests {
             compression: None,
         };
         let xisf = XISF {
-            source: Source::DistributedFile("tests/files/test.xish".into()),
+            source: Source::DistributedFile("tests/files/".into()),
             images: vec![],
         };
         let mut reader = http.location.raw_bytes(&xisf).unwrap();
@@ -1000,7 +1018,7 @@ mod tests {
             compression: None,
         };
         let xisf = XISF {
-            source: Source::DistributedFile("tests/files/test.xish".into()),
+            source: Source::DistributedFile("tests/files/".into()),
             images: vec![],
         };
         let mut reader = ftp.location.raw_bytes(&xisf).unwrap();

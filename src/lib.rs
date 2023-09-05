@@ -34,7 +34,7 @@ use std::{
 };
 
 pub mod error;
-use error::{ParseNodeError, ReadFileError};
+use error::{ParseNodeError, ParseNodeErrorKind::{self, *}, ReadFileError};
 
 pub mod data_block;
 use data_block::{ChecksumAlgorithm, CompressionAlgorithm, CompressionLevel};
@@ -111,6 +111,13 @@ pub(crate) enum Source {
     DistributedFile(PathBuf),
 }
 
+fn report(kind: ParseNodeErrorKind) -> Report<ParseNodeError> {
+    report!(context(kind))
+}
+const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
+    ParseNodeError::new("xisf", kind)
+}
+
 #[derive(Clone, Debug)]
 pub struct XISF {
     source: Source,
@@ -165,16 +172,18 @@ impl XISF {
                 .read_exact(&mut header_buf)
                 .change_context(ReadFileError)
                 .attach_printable_lazy(|| format!("Failed to read {header_length}-byte XML header from file"))?;
-            // TODO: replace with a shared BufReader<File>
-            source = Source::MonolithicFile(filename_path.canonicalize()
-                    .change_context(ReadFileError)
-                    .attach_printable("Failed to canonicalize filename")?);
+            source = Source::MonolithicFile(filename_path.to_owned());
         } else if let Some("xish") = extension.as_deref() {
             header_buf = vec![];
             reader.read_to_end(&mut header_buf)
                 .change_context(ReadFileError)
                 .attach_printable("Failed to read XML header from XISH file")?;
-            source = Source::DistributedFile(filename_path.to_owned());
+
+            // this unwrap is safe because:
+            // 1. when called on "dir/file.ext", returns Some("dir")
+            // 2. when called on "file.ext", returns Some("")
+            // 3. we know at minimum that the path contains a file because we just opened it
+            source = Source::DistributedFile(filename_path.parent().unwrap().to_owned());
         } else if let Some(bad) = extension {
             return Err(report!(ReadFileError))
                 .attach_printable(format!("Unsupported file extension: {bad}"))
@@ -231,16 +240,16 @@ impl XISF {
             .map_err(|_| report!(ReadFileError))
             .attach_printable("Failed to associate prefix to xisf namespace in XML header")?;
 
-        Self::parse_root_node(root, &xpath, source, opts)
-            .change_context(ReadFileError)
+        if root.get_name() != "xisf" {
+            return Err(report!(ReadFileError))
+                .attach_printable("Root element in XML header must be named \"xisf\"");
+        } else {
+            Self::parse_root_node(root, &xpath, source, opts)
+                .change_context(ReadFileError)
+        }
     }
 
     fn parse_root_node(node: RoNode, xpath: &XpathContext, source: Source, opts: &ReadOptions) -> Result<XISF, Report<ParseNodeError>> {
-        const CONTEXT: ParseNodeError = ParseNodeError("xisf");
-        if node.get_name() != "xisf" {
-            return Err(report!(CONTEXT))
-                .attach_printable("Root element in XML header must be named \"xisf\"");
-        }
 
         // * this is mutable because we use .remove() instead of .get()
         // that way, after we've extracted everything we recognize,
@@ -252,9 +261,9 @@ impl XISF {
         // version MUST be 1.0, though
         match attrs.remove("version").as_deref() {
             Some("1.0") => (),
-            None => return Err(report!(CONTEXT))
+            None => return Err(report(MissingAttr))
                 .attach_printable("Missing version attribute for <xisf> element in XML header"),
-            Some(bad) => return Err(report!(CONTEXT))
+            Some(bad) => return Err(report(InvalidAttr))
                 .attach_printable(format!("Invalid version attribute for <xisf> element in XML header: expected \"1.0\", found \"{bad}\"")),
         }
 
@@ -268,9 +277,9 @@ impl XISF {
 
         let mut images = vec![];
         for mut child in node.get_child_nodes() {
-            child = child.follow_reference(xpath).change_context(CONTEXT)?;
+            child = child.follow_reference(xpath).change_context(context(InvalidReference))?;
             match child.get_name().as_str() {
-                "Image" => images.push(Image::parse_node(child, xpath, opts).change_context(CONTEXT)?),
+                "Image" => images.push(Image::parse_node(child, xpath, opts)?),
                 // TODO: check if the unrecognized node has a uid tag with a reference to it somewhere before emitting a warning
                 _ => tracing::warn!("Ignoring unrecognized child node <{}>", child.get_name()),
             }

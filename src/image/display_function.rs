@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 
-use error_stack::{Report, report, ResultExt};
+use error_stack::{Report, report, Result, ResultExt};
 use libxml::readonly::RoNode;
 
-use crate::error::ParseNodeError;
+use crate::error::{ParseNodeError, ParseNodeErrorKind::{self, *}};
 
 /// A single-channel screen transfer function
 #[derive(Clone, Debug, PartialEq)]
@@ -126,6 +126,13 @@ impl STF {
     }
 }
 
+fn report(kind: ParseNodeErrorKind) -> Report<ParseNodeError> {
+    report!(context(kind))
+}
+const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
+    ParseNodeError::new("DisplayFunction", kind)
+}
+
 /// A multi-channel screen transfer function
 #[derive(Clone, Debug)]
 pub struct DisplayFunction {
@@ -151,35 +158,34 @@ impl PartialEq for DisplayFunction {
     }
 }
 impl DisplayFunction {
-    pub(crate) fn parse_node(node: RoNode) -> Result<Self, Report<ParseNodeError>> {
-        const CONTEXT: ParseNodeError = ParseNodeError("DisplayFunction");
+    pub(crate) fn parse_node(node: RoNode) -> Result<Self, ParseNodeError> {
         let _span_guard = tracing::debug_span!("DisplayFunction");
         let mut attrs = node.get_attributes();
         let children = node.get_child_nodes();
 
         let name = attrs.remove("name");
 
-        fn parse_rkgbl(attr: &str, attrs: &mut HashMap<String, String>) -> Result<[f64; 4], Report<ParseNodeError>> {
+        fn parse_rkgbl(attr: &str, attrs: &mut HashMap<String, String>) -> Result<[f64; 4], ParseNodeError> {
             if let Some(val) = attrs.remove(attr) {
                 match val.split(":").collect::<Vec<_>>().as_slice() {
                     &[rk, g, b, l] => Ok([
                         rk.trim().parse::<f64>()
-                            .change_context(CONTEXT)
+                            .change_context(context(InvalidAttr))
                             .attach_printable_lazy(|| format!("Invalid {attr} attribute: failed to parse red/grayscale value"))?,
                         g.trim().parse::<f64>()
-                            .change_context(CONTEXT)
+                            .change_context(context(InvalidAttr))
                             .attach_printable_lazy(|| format!("Invalid {attr} attribute: failed to parse green value"))?,
                         b.trim().parse::<f64>()
-                            .change_context(CONTEXT)
+                            .change_context(context(InvalidAttr))
                             .attach_printable_lazy(|| format!("Invalid {attr} attribute: failed to parse blue value"))?,
                         l.trim().parse::<f64>()
-                            .change_context(CONTEXT)
+                            .change_context(context(InvalidAttr))
                             .attach_printable_lazy(|| format!("Invalid {attr} attribute: failed to parse luminance value"))?,
                     ]),
-                    _bad => Err(report!(CONTEXT)).attach_printable(format!("Invalid {attr} attribute: expected pattern rk:g:b:l, found {val}")),
+                    _bad => Err(report(InvalidAttr)).attach_printable(format!("Invalid {attr} attribute: expected pattern rk:g:b:l, found {val}")),
                 }
             } else {
-                Err(report!(CONTEXT)).attach_printable(format!("Missing {attr} attribute"))
+                Err(report(MissingAttr)).attach_printable(format!("Missing {attr} attribute"))
             }
         }
 

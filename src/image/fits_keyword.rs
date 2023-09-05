@@ -1,9 +1,16 @@
-use error_stack::{Report, report, ResultExt};
+use error_stack::{Report, report, Result, ResultExt};
 use libxml::readonly::RoNode;
 use num_complex::Complex;
 use time::{OffsetDateTime, format_description::well_known::Iso8601};
 
-use crate::error::{ParseNodeError, ParseValueError};
+use crate::error::{ParseNodeError, ParseValueError, ParseNodeErrorKind::{self, *}};
+
+fn report(kind: ParseNodeErrorKind) -> Report<ParseNodeError> {
+    report!(context(kind))
+}
+const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
+    ParseNodeError::new("FitsKeyword", kind)
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FitsKeyword {
@@ -12,25 +19,24 @@ pub(crate) struct FitsKeyword {
     pub comment: String,
 }
 impl FitsKeyword {
-    pub(crate) fn parse_node(node: RoNode) -> Result<Self, Report<ParseNodeError>> {
+    pub(crate) fn parse_node(node: RoNode) -> Result<Self, ParseNodeError> {
         let _span_guard = tracing::debug_span!("FITSKeyword").entered();
-        const CONTEXT: ParseNodeError = ParseNodeError("FITSKeyword");
         let mut attrs = node.get_attributes();
 
         let name = attrs.remove("name")
-            .ok_or(report!(CONTEXT))
+            .ok_or(report(MissingAttr))
             .attach_printable("Missing name attribute")?
             .trim()
             .to_string();
 
         let value = attrs.remove("value")
-            .ok_or(report!(CONTEXT))
+            .ok_or(report(MissingAttr))
             .attach_printable("Missing value attribute")?
             .trim()
             .to_string();
 
         let comment = attrs.remove("comment")
-            .ok_or(report!(CONTEXT))
+            .ok_or(report(MissingAttr))
             .attach_printable("Missing comment attribute")?
             .trim()
             .to_string();
@@ -64,10 +70,10 @@ impl FitsKeyValue {
 }
 
 pub trait FromFitsStr: Sized {
-    fn from_fits_str(val: &str) -> Result<Self, Report<ParseValueError>>;
+    fn from_fits_str(val: &str) -> Result<Self, ParseValueError>;
 }
 impl FromFitsStr for String {
-    fn from_fits_str(mut val: &str) -> Result<Self, Report<ParseValueError>> {
+    fn from_fits_str(mut val: &str) -> Result<Self, ParseValueError> {
         const CONTEXT: ParseValueError = ParseValueError("FITS key as String");
         val = val.trim();
         if val.starts_with('\'') && val.ends_with('\'') {
@@ -93,7 +99,7 @@ impl FromFitsStr for String {
     }
 }
 impl FromFitsStr for bool {
-    fn from_fits_str(val: &str) -> Result<Self, Report<ParseValueError>> {
+    fn from_fits_str(val: &str) -> Result<Self, ParseValueError> {
         const CONTEXT: ParseValueError = ParseValueError("FITS key as bool");
         match val.trim() {
             "T" => Ok(true),
@@ -105,7 +111,7 @@ impl FromFitsStr for bool {
 macro_rules! from_fits_str_real {
     ($t:ty) => {
         impl FromFitsStr for $t {
-            fn from_fits_str(val: &str) -> Result<Self, Report<ParseValueError>> {
+            fn from_fits_str(val: &str) -> Result<Self, ParseValueError> {
                 val.trim().parse::<$t>().change_context(ParseValueError(concat!("FITS key as ", stringify!($t))))
             }
         }
@@ -125,7 +131,7 @@ from_fits_str_real!(i128);
 macro_rules! from_fits_str_real_float {
     ($t:ty) => {
         impl FromFitsStr for $t {
-            fn from_fits_str(val: &str) -> Result<Self, Report<ParseValueError>> {
+            fn from_fits_str(val: &str) -> Result<Self, ParseValueError> {
                 val.trim()
                     .replace(|c| { c == 'd' || c == 'D' }, "E")
                     .parse::<$t>()
@@ -140,7 +146,7 @@ from_fits_str_real_float!(f64);
 macro_rules! from_fits_str_complex {
     ($t:ty) => {
         impl FromFitsStr for Complex<$t> {
-            fn from_fits_str(mut val: &str) -> Result<Self, Report<ParseValueError>> {
+            fn from_fits_str(mut val: &str) -> Result<Self, ParseValueError> {
                 const CONTEXT: ParseValueError = ParseValueError(concat!("FITS key as Complex<", stringify!($t), '>'));
                 val = val.trim();
                 if val.starts_with('(') && val.ends_with(')') {
@@ -173,7 +179,7 @@ from_fits_str_complex!(i128);
 macro_rules! from_fits_str_complex_float {
     ($t:ty) => {
         impl FromFitsStr for Complex<$t> {
-            fn from_fits_str(mut val: &str) -> Result<Self, Report<ParseValueError>> {
+            fn from_fits_str(mut val: &str) -> Result<Self, ParseValueError> {
                 const CONTEXT: ParseValueError = ParseValueError(concat!("FITS key as Complex<", stringify!($t), '>'));
                 val = val.trim();
                 if val.starts_with('(') && val.ends_with(')') {
@@ -202,7 +208,7 @@ from_fits_str_complex_float!(f32);
 from_fits_str_complex_float!(f64);
 
 impl FromFitsStr for OffsetDateTime {
-    fn from_fits_str(val: &str) -> Result<Self, Report<ParseValueError>> {
+    fn from_fits_str(val: &str) -> Result<Self, ParseValueError> {
         // TODO: large dates
         // TODO: make more rigorous (see [section 9.1.1](https://fits.gsfc.nasa.gov/standard40/fits_standard40aa-le.pdf#subsubsection.9.1.1) of the spec)
         OffsetDateTime::parse(val.trim(), &Iso8601::PARSING)

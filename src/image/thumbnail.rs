@@ -3,7 +3,7 @@ use std::{ops::Deref, fmt::Debug};
 use error_stack::{Result, Report, report, ResultExt};
 use libxml::{readonly::RoNode, xpath::Context as XpathContext};
 
-use crate::{ReadOptions, error::ParseNodeError};
+use crate::{ReadOptions, error::{ParseNodeError, ParseNodeErrorKind::{self, *}}};
 
 use super::{ImageBase, ParseImage, Image, SampleFormat, ColorSpace};
 
@@ -27,6 +27,13 @@ impl OkForThumbnails for ColorSpace {
     }
 }
 
+fn report(kind: ParseNodeErrorKind) -> Report<ParseNodeError> {
+    report!(context(kind))
+}
+const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
+    ParseNodeError::new("Thumbnail", kind)
+}
+
 #[repr(transparent)]
 #[derive(Clone, Debug)]
 pub struct Thumbnail(ImageBase);
@@ -46,17 +53,16 @@ impl TryFrom<Image> for Thumbnail {
     type Error = Report<ParseNodeError>;
 
     fn try_from(image: Image) -> std::result::Result<Self, Self::Error> {
-        const CONTEXT: ParseNodeError = ParseNodeError("Thumbnail");
         if image.num_dimensions() != 2 {
-            Err(report!(CONTEXT)).attach_printable("Thumbnail images must be two-dimensional")
+            Err(report(InvalidAttr)).attach_printable("Thumbnail images must be two-dimensional")
         } else if !image.sample_format.ok_for_thumbnails() {
-            Err(report!(CONTEXT)).attach_printable("Thumbnail images must have either UInt8 or UInt16 samples")
+            Err(report(InvalidAttr)).attach_printable("Thumbnail images must have either UInt8 or UInt16 samples")
         } else if !image.color_space.ok_for_thumbnails() {
-            Err(report!(CONTEXT)).attach_printable("Thumbnail images must be either RGB or Grayscale color space")
+            Err(report(InvalidAttr)).attach_printable("Thumbnail images must be either RGB or Grayscale color space")
         } else if image.num_alpha_channels() > 1 {
-            Err(report!(CONTEXT)).attach_printable("Thumbnail images are allowed a max of 1 alpha channel")
+            Err(report(InvalidAttr)).attach_printable("Thumbnail images are allowed a max of 1 alpha channel")
         } else if image.bounds.is_some() {
-            Err(report!(CONTEXT)).attach_printable("Thumbnail elements may not have a bounds attribute")
+            Err(report(InvalidAttr)).attach_printable("Thumbnail elements may not have a bounds attribute")
         } else {
             Ok(Self(image.base))
         }

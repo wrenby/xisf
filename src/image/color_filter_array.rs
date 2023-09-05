@@ -1,9 +1,16 @@
-use error_stack::{Report, report, ResultExt};
+use error_stack::{Report, report, Result, ResultExt};
 use libxml::readonly::RoNode;
 use ndarray::{Array2, Axis};
 use parse_int::parse as parse_auto_radix;
 
-use crate::error::ParseNodeError;
+use crate::error::{ParseNodeError, ParseNodeErrorKind::{self, *}};
+
+fn report(kind: ParseNodeErrorKind) -> Report<ParseNodeError> {
+    report!(context(kind))
+}
+const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
+    ParseNodeError::new("ColorFilterArray", kind)
+}
 
 /// Color filter array
 #[derive(Clone, Debug)]
@@ -12,8 +19,7 @@ pub struct CFA {
     matrix: Array2<char>,
 }
 impl CFA {
-    pub(crate) fn parse_node(node: RoNode) -> Result<Self, Report<ParseNodeError>> {
-        const CONTEXT: ParseNodeError = ParseNodeError("ColorFilterArray");
+    pub(crate) fn parse_node(node: RoNode) -> Result<Self, ParseNodeError> {
         let _span_guard = tracing::debug_span!("ColorFilterArray");
         let mut attrs = node.get_attributes();
         let children = node.get_child_nodes();
@@ -24,39 +30,38 @@ impl CFA {
         let valid_chars = ['0', 'R', 'G', 'B', 'W', 'C', 'M', 'Y'];
 
         let pattern = attrs.remove("pattern")
-            .ok_or(report!(CONTEXT))
+            .ok_or(report(MissingAttr))
             .attach_printable("Missing pattern attribute")?
             .chars()
             .map(|c| {
                 if valid_chars.contains(&c) {
                     Ok(c)
                 } else {
-                    Err(report!(CONTEXT))
-                        .attach_printable(format!("Invalid CFA element: Expected one of {valid_chars:?}, found {c}"))
+                    Err(report(InvalidAttr))
+                        .attach_printable(format!("Invalid CFA element in pattern attribute: Expected one of {valid_chars:?}, found {c}"))
                 }
             })
             // .collect()ing a iterator of results into a result of a container functions as a way to verify all the characters have been parsed correctly
             // If any of them failed to parse, then the result of the collect() will be the first Err
-            .collect::<Result<Vec<_>, Report<ParseNodeError>>>()
-            .attach_printable("Invalid pattern attribute")?;
+            .collect::<Result<Vec<_>, ParseNodeError>>()?;
 
         let height = attrs.remove("height")
-            .ok_or(report!(CONTEXT))
+            .ok_or(report(MissingAttr))
             .attach_printable("Missing height attribute")?;
         let height = parse_auto_radix::<usize>(height.trim())
-            .change_context(CONTEXT)
+            .change_context(context(InvalidAttr))
             .attach_printable("Invalid height attribute: failed to parse as usize")?;
 
         let width = attrs.remove("width")
-            .ok_or(report!(CONTEXT))
+            .ok_or(report(MissingAttr))
             .attach_printable("Missing width attribute")?;
         let width = parse_auto_radix::<usize>(width.trim())
-            .change_context(CONTEXT)
+            .change_context(context(InvalidAttr))
             .attach_printable("Invalid width attribute: failed to parse as usize")?;
 
         let len = pattern.len();
         let matrix = Array2::from_shape_vec((height, width), pattern)
-            .change_context(CONTEXT)
+            .change_context(context(InvalidAttr))
             .attach_printable_lazy(|| format!("Expected H={height} * W={width} => {} elements in CFA pattern; found {}", height*width, len))?;
 
         for remaining in attrs.into_iter() {
