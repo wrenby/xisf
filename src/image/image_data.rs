@@ -95,7 +95,7 @@ use memory_layout::*;
 /// # Example
 ///
 /// ```
-/// use xisf_rs::{XISF, image::RawImageData};
+/// use xisf_rs::{XISF, image::ImageData};
 /// use ndarray::s;
 /// let (xisf, ctx) = XISF::read_file("tests/files/2ch.xisf", &Default::default()).expect("failed to read file");
 /// let img = xisf.get_image(0).read_data(&ctx).expect("failed to read image");
