@@ -6,29 +6,27 @@ use std::{
 };
 use super::PixelStorage;
 
-pub type RawImageData<T> = ImageData<T, Raw>;
-
 /// An `enum` wrapper for images of all possible [`SampleFormat`](super::SampleFormat)s
 ///
 /// If you think you know the sample format of a given image, or your program only accepts data of a certain type,
 /// you can attempt to convert a `DynImageData` into that type with `let raw: RawImageData<TYPE> = image.read_data(&xisf).try_into();`
 #[derive(Clone, Debug)]
 pub enum DynImageData {
-    UInt8(ImageData<u8, Raw>),
-    UInt16(ImageData<u16, Raw>),
-    UInt32(ImageData<u32, Raw>),
-    UInt64(ImageData<u64, Raw>),
-    Float32(ImageData<f32, Raw>),
-    Float64(ImageData<f64, Raw>),
-    Complex32(ImageData<Complex<f32>, Raw>),
-    Complex64(ImageData<Complex<f64>, Raw>),
+    UInt8(ImageData<u8>),
+    UInt16(ImageData<u16>),
+    UInt32(ImageData<u32>),
+    UInt64(ImageData<u64>),
+    Float32(ImageData<f32>),
+    Float64(ImageData<f64>),
+    Complex32(ImageData<Complex<f32>>),
+    Complex64(ImageData<Complex<f64>>),
 }
 macro_rules! try_into_impl {
     ($enum:ident, $t:ty) => {
         #[doc=concat!("Returns `Ok(RawImageData<", stringify!($t), ">)` for [`", stringify!($enum), "`](Self::", stringify!($enum), ") variants, and `Err(())` otherwise")]
-        impl TryInto<RawImageData<$t>> for DynImageData {
+        impl TryInto<ImageData<$t>> for DynImageData {
             type Error = ();
-            fn try_into(self) -> Result<RawImageData<$t>, Self::Error> {
+            fn try_into(self) -> Result<ImageData<$t>, Self::Error> {
                 match self {
                     Self::$enum(raw) => Ok(raw),
                     _ => Err(()),
@@ -63,7 +61,7 @@ macro_rules! into_impl {
             /// as one of the axes is considered a channel instead of a dimension.
             fn into_dyn_img(self, layout: PixelStorage) -> DynImageData {
                 assert!(self.shape().len() >= 2);
-                DynImageData::$enum(RawImageData::<$t>::new(self, layout))
+                DynImageData::$enum(ImageData::<$t>::new(self, layout))
             }
         }
     }
@@ -101,7 +99,7 @@ use memory_layout::*;
 /// use ndarray::s;
 /// let (xisf, ctx) = XISF::read_file("tests/files/2ch.xisf", &Default::default()).expect("failed to read file");
 /// let img = xisf.get_image(0).read_data(&ctx).expect("failed to read image");
-/// let raw: RawImageData<u16> = img.try_into().expect("not u16 samples");
+/// let raw: ImageData<u16> = img.try_into().expect("not u16 samples");
 /// let planar = raw.to_planar_layout();
 /// let normal = raw.to_normal_layout();
 /// assert_eq!(planar.shape(), &[2, 10, 4]);
@@ -110,8 +108,8 @@ use memory_layout::*;
 ///     assert_eq!(planar.slice(s![c, .., ..]), normal.slice(s![.., .., c]));
 /// }
 /// ```
-#[derive(Clone, Debug)]
-pub struct ImageData<T: Clone, L: Layout> {
+#[derive(Debug)]
+pub struct ImageData<T, L: Layout = Raw> {
     inner: ArrayD<T>,
     /// Uses an associated type to save some memory once the layout is known.
     /// When the data is first read and `L` is [`Raw`], `layout` will store a [`PixelStorage`] value.
@@ -120,7 +118,12 @@ pub struct ImageData<T: Clone, L: Layout> {
     /// since the layout is encoded in the template parameter, and storing it here would be redundant.
     layout: L::Storage,
 }
-impl<T: Clone, L: Layout> ImageData<T, L> {
+impl<T, L: Layout> Clone for ImageData<T, L> where T: Clone {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner.clone(), layout: self.layout.clone() }
+    }
+}
+impl<T, L: Layout> ImageData<T, L> where T: Clone {
     /// Reorganizes the pixel samples into [planar layout](PixelStorage::Planar), consuming `self`
     ///
     /// - If the current memory layout is normal, enough memory is needed to temporarily duplicate the image
@@ -186,7 +189,7 @@ impl<T: Clone, L: Layout> ImageData<T, L> {
         self.inner.shape().len() - 1
     }
 }
-impl<T: Clone> ImageData<T, Raw> {
+impl<T> ImageData<T, Raw> {
     pub fn new(buf: ArrayD<T>, layout: PixelStorage) -> Self {
         Self {
             inner: buf,
@@ -201,25 +204,25 @@ impl<T: Clone> ImageData<T, Raw> {
         }
     }
 }
-impl<T: Clone, L: Known> Deref for ImageData<T, L> {
+impl<T, L: Known> Deref for ImageData<T, L> {
     type Target = ArrayD<T>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
-impl<T: Clone, L: Known> DerefMut for ImageData<T, L> {
+impl<T, L: Known> DerefMut for ImageData<T, L> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct CowImageData<'a, T: Clone, L: Layout> {
+pub struct CowImageData<'a, T, L: Layout> {
     inner: CowArray<'a, T, IxDyn>,
     layout: L::Storage,
 }
-impl<'a, T: Clone, L: Layout> CowImageData<'a, T, L> {
+impl<'a, T, L: Layout> CowImageData<'a, T, L> where T: Clone {
     pub fn to_owned(&self) -> ImageData<T, L> {
         ImageData::<T, L> {
             inner: self.inner.to_owned(),
@@ -227,7 +230,7 @@ impl<'a, T: Clone, L: Layout> CowImageData<'a, T, L> {
         }
     }
 }
-impl<'a, T: Clone, L: Layout> From<&'a ImageData<T, L>> for CowImageData<'a, T, L> {
+impl<'a, T, L: Layout> From<&'a ImageData<T, L>> for CowImageData<'a, T, L> {
     fn from(value: &'a ImageData<T, L>) -> Self {
         Self {
             inner: (&value.inner).into(),
@@ -235,7 +238,7 @@ impl<'a, T: Clone, L: Layout> From<&'a ImageData<T, L>> for CowImageData<'a, T, 
         }
     }
 }
-impl<'a, T: Clone, L: Layout> From<ImageData<T, L>> for CowImageData<'a, T, L> {
+impl<'a, T, L: Layout> From<ImageData<T, L>> for CowImageData<'a, T, L> {
     fn from(value: ImageData<T, L>) -> Self {
         Self {
             inner: value.inner.into(),
@@ -243,14 +246,14 @@ impl<'a, T: Clone, L: Layout> From<ImageData<T, L>> for CowImageData<'a, T, L> {
         }
     }
 }
-impl<'a, T: Clone, L: Known> Deref for CowImageData<'a, T, L> {
+impl<'a, T, L: Known> Deref for CowImageData<'a, T, L> {
     type Target = CowArray<'a, T, IxDyn>;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
-impl<'a, T: Clone, L: Known> DerefMut for CowImageData<'a, T, L> {
+impl<'a, T, L: Known> DerefMut for CowImageData<'a, T, L> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.inner
     }
@@ -266,14 +269,14 @@ pub mod memory_layout {
         fn into_normal<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Normal>;
         fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Planar>;
         fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Normal>;
-        fn layout<T: Clone>(img: &ImageData<T, Self>) -> PixelStorage;
+        fn layout<T>(img: &ImageData<T, Self>) -> PixelStorage;
     }
 
     // TODO: investigate alternatives with lower memory overhead
     // there's no way to do this without some kind of a buffer, but I don't need to duplicate the whole image
     // I think iterating axis by axis would work, but it would lose cache coherency
     // - did it ever have it? probably not. check `as_standard_layout()` implementation
-    fn normal_to_planar<T: Clone>(buf: ArrayD<T>) -> ArrayD<T> {
+    fn normal_to_planar<T>(buf: ArrayD<T>) -> ArrayD<T> where T: Clone {
         let num_axes = buf.shape().len();
         let mut indices: Vec<_> = (0..num_axes).into_iter().collect();
         indices.rotate_right(1);
@@ -282,7 +285,7 @@ pub mod memory_layout {
             .as_standard_layout()
             .to_owned()
     }
-    fn planar_to_normal<T: Clone>(buf: ArrayD<T>) -> ArrayD<T> {
+    fn planar_to_normal<T>(buf: ArrayD<T>) -> ArrayD<T> where T: Clone {
         let num_axes = buf.shape().len();
         let mut indices: Vec<_> = (0..num_axes).into_iter().collect();
         indices.rotate_left(1);
@@ -298,7 +301,7 @@ pub mod memory_layout {
         type Storage = PhantomData<Self>;
 
         #[inline]
-        fn into_planar<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Planar> {
+        fn into_planar<T>(img: ImageData<T, Self>) -> ImageData<T, Planar> {
             img
         }
 
@@ -310,7 +313,7 @@ pub mod memory_layout {
         }
 
         #[inline]
-        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Planar> {
+        fn to_planar<T>(img: &ImageData<T, Self>) -> CowImageData<T, Planar> {
             img.into()
         }
 
@@ -320,7 +323,7 @@ pub mod memory_layout {
         }
 
         #[inline]
-        fn layout<T: Clone>(_img: &ImageData<T, Self>) -> PixelStorage {
+        fn layout<T>(_img: &ImageData<T, Self>) -> PixelStorage {
             PixelStorage::Planar
         }
     }
@@ -338,7 +341,7 @@ pub mod memory_layout {
         }
 
         #[inline]
-        fn into_normal<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Normal> {
+        fn into_normal<T>(img: ImageData<T, Self>) -> ImageData<T, Normal> {
             img
         }
 
@@ -348,12 +351,12 @@ pub mod memory_layout {
         }
 
         #[inline]
-        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Normal> {
+        fn to_normal<T>(img: &ImageData<T, Self>) -> CowImageData<T, Normal> {
             img.into()
         }
 
         #[inline]
-        fn layout<T: Clone>(_img: &ImageData<T, Self>) -> PixelStorage {
+        fn layout<T>(_img: &ImageData<T, Self>) -> PixelStorage {
             PixelStorage::Normal
         }
     }
@@ -403,7 +406,7 @@ pub mod memory_layout {
         }
 
         #[inline]
-        fn layout<T: Clone>(img: &ImageData<T, Self>) -> PixelStorage {
+        fn layout<T>(img: &ImageData<T, Self>) -> PixelStorage {
             img.layout
         }
     }
@@ -454,7 +457,7 @@ pub mod memory_layout {
             }
         }
 
-        fn layout<T: Clone>(img: &ImageData<T, Self>) -> PixelStorage {
+        fn layout<T>(img: &ImageData<T, Self>) -> PixelStorage {
             img.layout
         }
     }
@@ -655,7 +658,7 @@ mod tests {
                 let arr = ArrayD::<$t>::zeros(IxDyn(&[2, 3, 4, 5]));
                 let there = arr.into_dyn_img(PixelStorage::Normal);
                 assert!(matches!(there, DynImageData::$i(_)));
-                let back_again: Result<RawImageData<$t>, _> = there.try_into();
+                let back_again: Result<ImageData<$t>, _> = there.try_into();
                 assert!(back_again.is_ok());
             }
         }

@@ -1,3 +1,5 @@
+//! Anything related to [`Image`]
+
 use std::{
     any::TypeId,
     io::Read,
@@ -15,8 +17,7 @@ use parse_int::parse as parse_auto_radix;
 use strum::{Display, EnumString, EnumVariantNames, VariantNames};
 use uuid::Uuid;
 use crate::{
-    Context,
-    data_block::{DataBlock, ByteOrder},
+    data_block::{ByteOrder, Context, DataBlock},
     error::{ReadDataBlockError, ParseValueError, ReadFitsKeyError, ParseNodeErrorKind::*, ReadPropertyError},
     is_valid_id,
     MaybeReference,
@@ -134,15 +135,16 @@ impl ImageBase {
                             buf = ArrayD::<Complex<$t>>::zeros(IxDyn(&geometry[..]));
                         },
                     }
-                    let buf_slice = buf.as_slice_mut()
-                        .ok_or(report!(ReadDataBlockError))
-                        .attach_printable("Failed to get write access to output buffer")?;
+                    // this unwrap is safe because:
+                    // 1. all owned arrays are contiguous, and
+                    // 2. it's in standard order since we just allocated it
+                    let buf_slice = buf.as_slice_mut().unwrap();
                     let bytemuck_slice: &mut [$t] = bytemuck::cast_slice_mut(buf_slice);
 
                     match self.data_block.byte_order {
                         ByteOrder::Big => reader.$func::<BE>(bytemuck_slice),
                         ByteOrder::Little => reader.$func::<LE>(bytemuck_slice),
-                    }.change_context(ReadDataBlockError)?;
+                    }.change_context(ReadDataBlockError::IoError)?;
                     Ok(buf.into_dyn_img(self.pixel_storage))
                 }
             }
@@ -179,13 +181,14 @@ impl ImageBase {
                 buf = ArrayD::<T>::zeros(IxDyn(&geometry[..]));
             },
         }
-        let buf_slice = buf.as_slice_mut()
-            .ok_or(report!(ReadDataBlockError))
-            .attach_printable("Failed to get write access to output buffer")?;
+        // this unwrap is safe because:
+        // 1. all owned arrays are contiguous, and
+        // 2. it's in standard order since we just allocated it
+        let buf_slice = buf.as_slice_mut().unwrap();
         match self.data_block.byte_order {
             ByteOrder::Big => read_be(reader, buf_slice),
             ByteOrder::Little => read_le(reader, buf_slice),
-        }.change_context(ReadDataBlockError)?;
+        }.change_context(ReadDataBlockError::IoError)?;
         Ok(buf)
     }
 

@@ -1,3 +1,12 @@
+//! XISF property parsing
+//!
+//! Nothing in here will be likely to be used directly, but it's exposed as a public module
+//! as a means to
+//!
+//! See [`ImageBase::parse_property`](crate::image::ImageBase::parse_property),
+//! [`XISF::parse_property`](crate::XISF::parse_property),
+//! and [`XISF::parse_metadata`](crate::XISF::parse_metadata) for likely entry points
+
 use error_stack::{report, Result, ResultExt, Report};
 use libxml::{readonly::RoNode, tree::NodeType};
 use num_complex::Complex;
@@ -5,9 +14,9 @@ use strum::{EnumString, Display};
 use time::{OffsetDateTime, format_description::well_known::Iso8601};
 
 use crate::{
-    data_block::DataBlock,
+    data_block::{Context, DataBlock},
     error::{ParseValueError, ParseNodeError, ParseNodeErrorKind::{self, *}},
-    reference::is_valid_id, Context
+    reference::is_valid_id
 };
 
 #[repr(u8)]

@@ -1,3 +1,5 @@
+//! Anything related to [`DataBlock`], XISF's representation of bulk binary data
+
 use std::{
     cell::{RefCell, RefMut},
     collections::HashMap,
@@ -16,21 +18,21 @@ use flate2::read::ZlibDecoder;
 use libxml::{readonly::RoNode, tree::NodeType};
 use ndarray::Array2;
 use parse_int::parse as parse_auto_radix;
+use remotefs::{RemoteError, RemoteErrorType};
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
 use sha3::{Sha3_256, Sha3_512};
 use strum::{EnumString, Display, EnumVariantNames};
 use url::Url;
-use crate::{
-    error::{
-        ParseValueError,
-        ParseNodeError,
-        ParseNodeErrorKind::{self, *},
-        ReadDataBlockError
-    },
-    Context,
-    Source
+use crate::error::{
+    ParseValueError,
+    ParseNodeError,
+    ParseNodeErrorKind::{self, *},
+    ReadDataBlockError,
 };
+
+mod context;
+pub use context::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataBlock {
@@ -135,7 +137,7 @@ impl DataBlock {
         fn verify_checksum_impl<D: Digest + Write>(expected: &[u8], reader: &mut impl Read) -> Result<(), ReadDataBlockError> {
             let mut hasher = D::new();
             std::io::copy(reader, &mut hasher)
-                .change_context(ReadDataBlockError)
+                .change_context(ReadDataBlockError::IoError)
                 .attach_printable("Failed to calculate data block hash")?;
             let actual = hasher.finalize();
             if actual.as_slice() == expected {
@@ -143,7 +145,7 @@ impl DataBlock {
             } else {
                 let actual = hex_simd::encode_to_string(actual.as_slice(), hex_simd::AsciiCase::Lower);
                 let expected = hex_simd::encode_to_string(expected, hex_simd::AsciiCase::Lower);
-                Err(report!(ReadDataBlockError))
+                Err(report!(ReadDataBlockError::DifferentChecksum))
                     .attach_printable(format!("Data block failed checksum verification: expected {expected}, found {actual}"))
             }
         }
@@ -331,66 +333,72 @@ impl Location {
             Self::Plaintext { encoding, text } => {
                 let buf = match encoding {
                     TextEncoding::Hex => hex_simd::decode_to_vec(text)
-                        .change_context(ReadDataBlockError)?,
+                        .change_context(ReadDataBlockError::BadTextEncoding)
+                        .attach_printable("Bad hex encoding")?,
                     TextEncoding::Base64 => base64.decode_to_vec(text)
-                        .change_context(ReadDataBlockError)?,
+                        .change_context(ReadDataBlockError::BadTextEncoding)
+                        .attach_printable("Bad Base64 encoding")?,
                 };
                 Ok(Box::new(Cursor::new(buf)))
             },
             Self::Attachment { position, size } => {
-                if let Source::MonolithicFile(cell) = &ctx.source {
+                if let Source::Monolithic(cell) = &ctx.source {
                     let mut reader = cell.try_borrow_mut()
-                        .change_context(ReadDataBlockError)
-                        .attach_printable("Reader is in use by another data block")?;
+                        .change_context(ReadDataBlockError::FileInUse)?;
                     reader.seek(io::SeekFrom::Start(*position))
-                        .change_context(ReadDataBlockError)?;
+                        .change_context(ReadDataBlockError::IoError)?;
                     Ok(Box::new(reader.take_ref(*size)))
                 }  else {
-                    Err(report!(ReadDataBlockError))
+                    Err(report!(ReadDataBlockError::UnsupportedLocation))
                         .attach_printable("Data blocks with location=\"attachment\" are only supported for monolithic files")
                 }
             },
             #[allow(unused_variables)]
             Self::Url { url, index_id: None } => {
-                if let Source::DistributedFile(_) = &ctx.source {
+                if let Source::Distributed(_) = &ctx.source {
+                    if let Some(host) = url.host() {
+                        ctx.ensure_trusted(host)?;
+                    }
                     match url.scheme() {
                         "file" => {
                             let file = File::open(url.path())
-                                .change_context(ReadDataBlockError)?;
+                                .change_context(ReadDataBlockError::IoError)?;
                             Ok(Box::new(BufReader::new(file)))
                         },
                         #[cfg(feature = "remote-http")]
                         "http" | "https" => {
                             let resp = ureq::get(url.as_str())
                                 .call()
-                                .change_context(ReadDataBlockError)?;
+                                .change_context(ReadDataBlockError::IoError)?;
                             Ok(resp.into_reader())
                         },
                         #[cfg(feature = "remote-ftp")]
                         "ftp" => {
                             use remotefs::RemoteFs;
                             const DEFAULT_FTP_PORT: u16 = 21;
+                            let host = url.host().ok_or(report!(ReadDataBlockError::MissingHost))?;
                             let mut ftp = remotefs_ftp::FtpFs::new(
-                                url.host()
-                                    .ok_or(report!(ReadDataBlockError))
-                                    .attach_printable("Invalid FTP hostname")?
-                                    .to_string(),
+                                host.to_string(),
                                 url.port().unwrap_or(DEFAULT_FTP_PORT)
                             ).username(url.username())
                             .password(url.password().unwrap_or(""));
-                            ftp.connect()
-                                .change_context(ReadDataBlockError)
-                                .attach_printable("Failed to connect to FTP server")?;
+                            match ftp.connect() {
+                                Ok(_) => {},
+                                Err(RemoteError { kind: RemoteErrorType::AuthenticationFailed, ..}) => {
+                                    return Err(report!(ReadDataBlockError::Unauthorized(url.clone())));
+                                },
+                                Err(_) => return Err(report!(ReadDataBlockError::IoError)).attach_printable("Failed to connect to FTP server"),
+                            }
                             let file = ftp.open(url.path().as_ref())
-                                .change_context(ReadDataBlockError)
+                                .change_context(ReadDataBlockError::IoError)
                                 .attach_printable("Failed to open file over FTP")?;
                             Ok(Box::new(file))
                         },
-                        bad => Err(report!(ReadDataBlockError))
+                        bad => Err(report!(ReadDataBlockError::UnsupportedScheme(bad.to_string())))
                             .attach_printable(format!("Unsupported scheme: {bad}"))
                     }
                 }  else {
-                    Err(report!(ReadDataBlockError))
+                    Err(report!(ReadDataBlockError::UnsupportedLocation))
                         .attach_printable("Data blocks with location=\"url(...)\" are only supported for distributed files")
                 }
             },
@@ -399,21 +407,21 @@ impl Location {
                 todo!()
             },
             Self::Path { path, index_id: None } => {
-                if let Source::DistributedFile(directory) = &ctx.source {
+                if let Source::Distributed(directory) = &ctx.source {
                     if path.starts_with("@header_dir/") {
                         let mut path_buf = directory.clone();
                         // this unwrap is safe because we just checked that it starts with @header_dir/
                         path_buf.push(path.strip_prefix("@header_dir/").unwrap());
                         let file = File::open(path_buf)
-                            .change_context(ReadDataBlockError)?;
+                            .change_context(ReadDataBlockError::IoError)?;
                         Ok(Box::new(BufReader::new(file)))
                     } else {
                         let file = File::open(path)
-                            .change_context(ReadDataBlockError)?;
+                            .change_context(ReadDataBlockError::IoError)?;
                         Ok(Box::new(BufReader::new(file)))
                     }
                 } else {
-                    Err(report!(ReadDataBlockError))
+                    Err(report!(ReadDataBlockError::UnsupportedLocation))
                         .attach_printable("Data blocks with location=\"path(...)\" are only supported for distributed files")
                 }
             },
@@ -445,7 +453,7 @@ impl Location {
                                 lz4::Decoder::new(shared)
                                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
                             )
-                        }).change_context(ReadDataBlockError)
+                        }).change_context(ReadDataBlockError::IoError)
                         .attach_printable("Failed to initialize Lz4 decoder")?;
 
                     Self::unshuffle(lz4, compression)
@@ -457,7 +465,7 @@ impl Location {
                                 zstd::Decoder::new(shared)
                                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
                             )
-                        }).change_context(ReadDataBlockError)
+                        }).change_context(ReadDataBlockError::IoError)
                         .attach_printable("Failed to initialize Zstd decoder")?;
 
                     Self::unshuffle(zstd, compression)
@@ -478,12 +486,12 @@ impl Location {
                 let item_size: usize = item_size.into();
                 let n = compression.uncompressed_size() / item_size;
                 if n * item_size != compression.uncompressed_size() {
-                    return Err(report!(ReadDataBlockError)).attach_printable("Uncompressed size is not divisible by item size")
+                    return Err(report!(ReadDataBlockError::BadByteShuffleItemSize))
                 }
                 // to unshuffle, call this same code block [n, item_size] instead of [item_size, n]
                 let mut buf = Array2::<u8>::zeros([n, item_size]);
                 reader.read_exact(buf.as_slice_memory_order_mut().unwrap())
-                    .change_context(ReadDataBlockError)
+                    .change_context(ReadDataBlockError::IoError)
                     .attach_printable("Failed to read bytes into temporary buffer for unshuffling")?;
                 buf.swap_axes(0, 1);
                 Ok(Box::new(Cursor::new(buf.as_standard_layout().to_owned().into_raw_vec())))
@@ -1012,13 +1020,19 @@ mod tests {
     #[cfg(all(feature = "remote-http", not(docsrs)))]
     #[test]
     fn http_bin_file() {
+        use url::Host;
+
         let http = DataBlock {
             location: Location::Url { url: "https://github.com/wrenby/xisf/raw/main/tests/files/gradient.bin".try_into().unwrap(), index_id: None },
             byte_order: ByteOrder::Little, // doesn't matter, since the file is a u8 array
             checksum: None,
             compression: None,
         };
-        let ctx = Context::distributed("tests/files/");
+        let mut ctx = Context::distributed("tests/files/");
+        let untrusted = http.location.raw_bytes(&ctx).err().unwrap();
+        assert_eq!(untrusted.current_context(), &ReadDataBlockError::UntrustedHost(Host::Domain("github.com".into())));
+
+        ctx.trust_host(Host::Domain("github.com".into()));
         let mut reader = http.location.raw_bytes(&ctx).unwrap();
         let mut array: Array3<u8> = Array3::zeros((200, 250, 3)); // 200x250 RGB
         reader.read_exact(array.as_slice_mut().unwrap()).unwrap();

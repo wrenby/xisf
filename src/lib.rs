@@ -9,7 +9,7 @@
 //! [libXISF](https://gitea.nouspiro.space/nou/libXISF) or Pleiades Astrophoto's own [PixInsight Class Libraries](https://gitlab.com/pixinsight/PCL),
 //! which are written with 2D images in mind.
 //!
-//! See the examples folder for a an approximately 100-line XISF to FITS converter powered by this library.
+//! See the examples folder for a a simple XISF to FITS converter powered by this library.
 //! <div class="warning">
 //!
 //! The examples folder is set up as part of a workspace, which turns off example auto-discovery.
@@ -27,31 +27,31 @@ use libxml::{
     xpath::Context as XpathContext,
 };
 use std::{
-    cell::RefCell,
     collections::HashMap,
     ffi::CStr,
     fs::File,
     io::{BufReader, Read},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 pub mod error;
 use error::{ParseNodeError, ParseNodeErrorKind::{self, *}, ReadFileError, ReadPropertyError};
 
 pub mod data_block;
-use data_block::{ChecksumAlgorithm, CompressionAlgorithm, CompressionLevel};
+use data_block::{ChecksumAlgorithm, CompressionAlgorithm, CompressionLevel, Context};
+pub use data_block::DataBlock;
 
 pub mod image;
-use image::Image;
+pub use image::Image;
 
 mod reference;
 pub(crate) use reference::*;
 
-mod property;
+pub mod property;
 use property::*;
 
 mod metadata;
-pub use metadata::Metadata;
+use metadata::Metadata;
 
 /// Flags to alter the behavior of the reader
 #[non_exhaustive]
@@ -113,33 +113,6 @@ impl WriteOptions {
     }
 }
 
-#[derive(Debug)]
-pub(crate) enum Source {
-    MonolithicFile(RefCell<BufReader<File>>),
-    DistributedFile(PathBuf),
-}
-
-#[derive(Debug)]
-pub struct Context {
-    source: Source,
-}
-impl Context {
-    #[cfg(test)]
-    pub(crate) fn distributed(path: impl Into<PathBuf>) -> Self {
-        Self {
-            source: Source::DistributedFile(path.into())
-        }
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn monolithic(file: BufReader<File>) -> Self {
-        Self {
-            source: Source::MonolithicFile(RefCell::new(file))
-        }
-    }
-}
-
 fn report(kind: ParseNodeErrorKind) -> Report<ParseNodeError> {
     report!(context(kind))
 }
@@ -147,6 +120,9 @@ const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
     ParseNodeError::new("xisf", kind)
 }
 
+/// An XISF file
+///
+/// Not limited to monolithic files (that is, XISH files are also supported)
 #[derive(Clone, Debug)]
 pub struct XISF {
     images: Vec<Image>,
@@ -154,6 +130,7 @@ pub struct XISF {
     metadata: Metadata,
 }
 impl XISF {
+    /// Opens a file from disk
     pub fn read_file(filename: impl AsRef<Path>, opts: &ReadOptions) -> Result<(Self, Context), ReadFileError> {
         let filename_path = filename.as_ref();
         let filename_str = filename_path.to_string_lossy().to_string();
@@ -169,7 +146,7 @@ impl XISF {
             .map(|ext| ext.to_lowercase());
 
         let mut header_buf;
-        let source;
+        let ctx;
         if let Some("xisf") = extension.as_deref() {
             // verify that the first 8 bytes of the file are XISF0100
             const CORRECT_SIGNATURE: [u8; 8] = *b"XISF0100";
@@ -202,7 +179,7 @@ impl XISF {
                 .read_exact(&mut header_buf)
                 .change_context(ReadFileError)
                 .attach_printable_lazy(|| format!("Failed to read {header_length}-byte XML header from file"))?;
-            source = Source::MonolithicFile(RefCell::new(reader));
+            ctx = Context::monolithic(reader);
         } else if let Some("xish") = extension.as_deref() {
             header_buf = vec![];
             reader.read_to_end(&mut header_buf)
@@ -213,7 +190,7 @@ impl XISF {
             // 1. when called on "dir/file.ext", returns Some("dir")
             // 2. when called on "file.ext", returns Some("")
             // 3. we know at minimum that the path contains a file because we just opened it
-            source = Source::DistributedFile(filename_path.parent().unwrap().to_owned());
+            ctx = Context::distributed(filename_path.parent().unwrap().to_owned());
         } else if let Some(bad) = extension {
             return Err(report!(ReadFileError))
                 .attach_printable(format!("Unsupported file extension: {bad}"))
@@ -277,7 +254,7 @@ impl XISF {
             Ok((
                 Self::parse_root_node(root, &xpath, opts)
                     .change_context(ReadFileError)?,
-                Context { source }
+                ctx
             ))
 
         }
@@ -389,7 +366,27 @@ impl XISF {
         self.properties.iter()
     }
 
-    pub fn metadata(&self) -> &Metadata {
-        &self.metadata
+    /// Returns true iff the Metadata element contains an XISF property with the given ID
+    pub fn has_metadata(&self, id: impl AsRef<str>) -> bool {
+        self.metadata.contains_key(id.as_ref())
+    }
+
+    /// Attempts to parse an XISF property from the Metadata element with the given ID as type T
+    ///
+    /// To read a value and comment pair, use the pattern `let (value, comment) = properties.parse_property("ID", &xisf)?;`
+    pub fn parse_metadata<T: FromProperty>(&self, id: impl AsRef<str>, ctx: &Context) -> Result<T, ReadPropertyError> {
+        let content = self.metadata.get(id.as_ref())
+            .ok_or(report!(ReadPropertyError::KeyNotFound))?;
+        T::from_property(&content, ctx)
+            .change_context(ReadPropertyError::InvalidFormat)
+    }
+    /// Returns the raw content of the XISF property in the Metadata element matching the given ID`
+    pub fn raw_metadata(&self, id: impl AsRef<str>) -> Option<&PropertyContent> {
+        self.metadata.get(id.as_ref())
+    }
+    /// Iterates through all XISF properties as (id, type+value+comment) tuples,
+    /// in the order they appear in file, returned as raw unparsed strings/data blocks.
+    pub fn all_raw_metadata(&self) -> impl Iterator<Item = (&String, &PropertyContent)> {
+        self.metadata.iter()
     }
 }

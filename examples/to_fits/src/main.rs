@@ -3,7 +3,7 @@ use fitsio::{images::{ImageDescription, ImageType, WriteImage}, FitsFile};
 use tracing::Level;
 use tracing_error::ErrorLayer;
 use tracing_subscriber::{prelude::*, FmtSubscriber};
-use xisf_rs::image::{DynImageData, RawImageData};
+use xisf_rs::image::{DynImageData, ImageData};
 use std::{env, any::TypeId, fmt::Debug};
 
 fn main() {
@@ -53,7 +53,7 @@ fn main() {
     // passing the file as a &mut Option because we want to do something different the first time this is run
     // several FITS readers expect the primary hdu to contain image information in files with multiple images,
     // so we need a mechanism to create a primary hdu (that is, open the file itself) on demand to fit image specifications
-    fn write_array<T: WriteImage + Clone + Debug + 'static>(fits: &mut Option<FitsFile>, out_name: &str, arr: RawImageData<T>, name: impl AsRef<str>, format: ImageType) {
+    fn write_array<T: WriteImage + Clone + Debug + 'static>(fits: &mut Option<FitsFile>, out_name: &str, arr: ImageData<T>, name: impl AsRef<str>, format: ImageType) {
         let arr = arr.into_planar_layout();
         println!("{:?}", *arr);
         // remove channel as an axis if there's only one

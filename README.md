@@ -14,7 +14,7 @@ An unaffiliated implementation of Pleiades Astrophoto's open-source Extensible I
 Language | Rust | C++ | C++
 License | MIT | GPLv3 | BSD-4-Clause-like
 Monolithic Files | Decode | Encode + Decode | Encode + Decode
-Distributed Files | <details><summary>Decode (Partial)</summary>Supported schemes: `file`, `http`/`https` (basic auth not supported), and `ftp` (credentials must be encoded in URI). No local caching; no XISB files.</details> | ❌ | ❌
+Distributed Files | <details><summary>Decode (Partial)</summary>`file`, `http`, `https`, `ftp`, see [road map](#road-map)</details> | ❌ | ❌
 N-D Images | ✅ | [❌](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816) | [❌](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001)
 Pixel Sample Formats | Scalar, Complex | Agnostic (Raw Bytes Only) | Scalar<sup>1</sup>, Complex
 Image Metadata | <details>Attributes, XISF Properties<sup>2</sup>, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA, Resolution, Thumbnail</details> | <details>Attributes<sup>3</sup>, XISF Properties<sup>4</sup>, FITS Keywords<sup>5</sup>, ICC Profile, CFA, Thumbnail</details> | <details>Attributes<sup>6</sup>, XISF Properties, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA, Resolution, Thumbnail</details>
@@ -51,11 +51,13 @@ XML Digital Signature Verification | ❌ | ❌ | ❌
 - [x] `<FITSKeyword>` element
 - [x] Image thumbnails
 - [x] Remote resources
+  - [x] Ask user for trust before connecting
+  - [ ] Caching <!-- `tempfile`, `stat` crates -->
+    - Files with a checksum are read through twice, and right now that means the file gets downloaded twice
   - [ ] Authorization/Credentials Store
-  - [ ] Ask user for trust before connecting
-  - [ ] SFTP/SCP
-  - [ ] Caching <!-- `tempfile`, `stat` crates; HTTP headers -->
+    - Stateful schemes like FTP require keeping track of sessions
   - [ ] XISB files
+  - [ ] SFTP/SCP
 - [x] Non-`<Property>` image metadata
 - [x] Scalar, Complex, String, and TimePoint `<Property>` elements
 - [ ] Write monolithic files

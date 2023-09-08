@@ -2,8 +2,7 @@ use error_stack::{Report, report, ResultExt};
 use libxml::readonly::RoNode;
 
 use crate::{
-    Context,
-    data_block::{DataBlock, ByteOrder},
+    data_block::{ByteOrder, Context, DataBlock},
     error::{ParseNodeError, ParseNodeErrorKind::{self, *}, ReadDataBlockError},
 };
 
@@ -50,7 +49,7 @@ impl ICCProfile {
         self.data_block.verify_checksum(ctx)?;
         self.data_block.decompressed_bytes(ctx)?
             .read_to_end(&mut buf)
-            .change_context(ReadDataBlockError)?;
+            .change_context(ReadDataBlockError::IoError)?;
         Ok(buf)
     }
 }
