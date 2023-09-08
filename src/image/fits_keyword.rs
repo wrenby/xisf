@@ -15,8 +15,7 @@ const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FitsKeyword {
     pub name: String,
-    pub value: String,
-    pub comment: String,
+    pub content: FitsKeyContent,
 }
 impl FitsKeyword {
     pub(crate) fn parse_node(node: RoNode) -> Result<Self, ParseNodeError> {
@@ -51,31 +50,40 @@ impl FitsKeyword {
 
         Ok(Self {
             name,
-            value,
-            comment,
+            content: FitsKeyContent {
+                value,
+                comment,
+            },
         })
     }
 }
 
 /// POD type to store the value and comment of a FITS key
-#[derive(Clone, Debug)]
-pub struct FitsKeyValue {
+#[derive(Clone, Debug, PartialEq)]
+pub struct FitsKeyContent {
     pub value: String,
     pub comment: String,
 }
-impl FitsKeyValue {
+impl FitsKeyContent {
     pub fn value_is_defined(&self) -> bool {
         self.value != ""
     }
+    #[cfg(test)]
+    pub(crate) fn new(value: impl Into<String>) -> Self {
+        Self {
+            value: value.into(),
+            comment: String::new(),
+        }
+    }
 }
 
-pub trait FromFitsStr: Sized {
-    fn from_fits_str(val: &str) -> Result<Self, ParseValueError>;
+pub trait FromFitsKey: Sized {
+    fn from_fits_key(content: &FitsKeyContent) -> Result<Self, ParseValueError>;
 }
-impl FromFitsStr for String {
-    fn from_fits_str(mut val: &str) -> Result<Self, ParseValueError> {
+impl FromFitsKey for String {
+    fn from_fits_key(content: &FitsKeyContent) -> Result<Self, ParseValueError> {
         const CONTEXT: ParseValueError = ParseValueError("FITS key as String");
-        val = val.trim();
+        let mut val = content.value.trim();
         if val.starts_with('\'') && val.ends_with('\'') {
             val = &val[1..val.len()-1];
             let no_trailing_spaces = val.trim_end_matches(' ');
@@ -98,10 +106,10 @@ impl FromFitsStr for String {
         }
     }
 }
-impl FromFitsStr for bool {
-    fn from_fits_str(val: &str) -> Result<Self, ParseValueError> {
+impl FromFitsKey for bool {
+    fn from_fits_key(content: &FitsKeyContent) -> Result<Self, ParseValueError> {
         const CONTEXT: ParseValueError = ParseValueError("FITS key as bool");
-        match val.trim() {
+        match content.value.trim() {
             "T" => Ok(true),
             "F" => Ok(false),
             bad => Err(report!(CONTEXT)).attach_printable(format!("Expected one of [T, F], found {bad}"))
@@ -110,9 +118,9 @@ impl FromFitsStr for bool {
 }
 macro_rules! from_fits_str_real {
     ($t:ty) => {
-        impl FromFitsStr for $t {
-            fn from_fits_str(val: &str) -> Result<Self, ParseValueError> {
-                val.trim().parse::<$t>().change_context(ParseValueError(concat!("FITS key as ", stringify!($t))))
+        impl FromFitsKey for $t {
+            fn from_fits_key(content: &FitsKeyContent) -> Result<Self, ParseValueError> {
+                content.value.trim().parse::<$t>().change_context(ParseValueError(concat!("FITS key as ", stringify!($t))))
             }
         }
     };
@@ -130,9 +138,9 @@ from_fits_str_real!(i128);
 
 macro_rules! from_fits_str_real_float {
     ($t:ty) => {
-        impl FromFitsStr for $t {
-            fn from_fits_str(val: &str) -> Result<Self, ParseValueError> {
-                val.trim()
+        impl FromFitsKey for $t {
+            fn from_fits_key(content: &FitsKeyContent) -> Result<Self, ParseValueError> {
+                content.value.trim()
                     .replace(|c| { c == 'd' || c == 'D' }, "E")
                     .parse::<$t>()
                     .change_context(ParseValueError(concat!("FITS key as ", stringify!($t))))
@@ -145,10 +153,10 @@ from_fits_str_real_float!(f64);
 
 macro_rules! from_fits_str_complex {
     ($t:ty) => {
-        impl FromFitsStr for Complex<$t> {
-            fn from_fits_str(mut val: &str) -> Result<Self, ParseValueError> {
+        impl FromFitsKey for Complex<$t> {
+            fn from_fits_key(content: &FitsKeyContent) -> Result<Self, ParseValueError> {
                 const CONTEXT: ParseValueError = ParseValueError(concat!("FITS key as Complex<", stringify!($t), '>'));
-                val = val.trim();
+                let val = content.value.trim();
                 if val.starts_with('(') && val.ends_with(')') {
                     if let Some((re, im)) = val[1..val.len()-1].split_once(',') {
                         Ok(Complex::<$t>::new(
@@ -178,10 +186,10 @@ from_fits_str_complex!(i128);
 
 macro_rules! from_fits_str_complex_float {
     ($t:ty) => {
-        impl FromFitsStr for Complex<$t> {
-            fn from_fits_str(mut val: &str) -> Result<Self, ParseValueError> {
+        impl FromFitsKey for Complex<$t> {
+            fn from_fits_key(content: &FitsKeyContent) -> Result<Self, ParseValueError> {
                 const CONTEXT: ParseValueError = ParseValueError(concat!("FITS key as Complex<", stringify!($t), '>'));
-                val = val.trim();
+                let val = content.value.trim();
                 if val.starts_with('(') && val.ends_with(')') {
                     if let Some((re, im)) = val[1..val.len()-1].split_once(',') {
                         Ok(Complex::<$t>::new(
@@ -207,12 +215,19 @@ macro_rules! from_fits_str_complex_float {
 from_fits_str_complex_float!(f32);
 from_fits_str_complex_float!(f64);
 
-impl FromFitsStr for OffsetDateTime {
-    fn from_fits_str(val: &str) -> Result<Self, ParseValueError> {
+impl FromFitsKey for OffsetDateTime {
+    fn from_fits_key(content: &FitsKeyContent) -> Result<Self, ParseValueError> {
         // TODO: large dates
         // TODO: make more rigorous (see [section 9.1.1](https://fits.gsfc.nasa.gov/standard40/fits_standard40aa-le.pdf#subsubsection.9.1.1) of the spec)
-        OffsetDateTime::parse(val.trim(), &Iso8601::PARSING)
+        OffsetDateTime::parse(content.value.trim(), &Iso8601::PARSING)
             .change_context(ParseValueError("FITS key as OffsetDateTime"))
+    }
+}
+
+// TODO: this is recursive
+impl<T: FromFitsKey> FromFitsKey for (T, String) {
+    fn from_fits_key(content: &FitsKeyContent) -> Result<Self, ParseValueError> {
+        Ok((T::from_fits_key(content)?, content.comment.clone()))
     }
 }
 
@@ -224,36 +239,36 @@ mod tests {
 
     #[test]
     fn string_trims_trailing_whitespace() {
-        let trailing = String::from_fits_str("'TABLE   '");
+        let trailing = String::from_fits_key(&FitsKeyContent::new("'TABLE   '"));
         assert!(trailing.is_ok());
         assert_eq!(trailing.unwrap().as_str(), "TABLE", "trailing whitespace was not trimmed");
 
-        let leading = String::from_fits_str("'  TABLE '");
+        let leading = String::from_fits_key(&FitsKeyContent::new("'  TABLE '"));
         assert!(leading.is_ok());
         assert_eq!(leading.unwrap().as_str(), "  TABLE", "leading whitespace was improperly trimmed");
 
-        let around_single_quotes = String::from_fits_str("     'TABLE'   ");
+        let around_single_quotes = String::from_fits_key(&FitsKeyContent::new("     'TABLE'   "));
         assert!(around_single_quotes.is_ok());
         assert_eq!(around_single_quotes.unwrap(), "TABLE", "whitespace around single quotes must be trimmed");
     }
 
     #[test]
     fn string_distinguishes_null_empty_undefined() {
-        let null = String::from_fits_str("''");
+        let null = String::from_fits_key(&FitsKeyContent::new("''"));
         assert!(null.is_ok());
         assert_eq!(null.unwrap().as_str(), "");
 
-        let empty = String::from_fits_str("'        '");
+        let empty = String::from_fits_key(&FitsKeyContent::new("'        '"));
         assert!(empty.is_ok());
         assert_eq!(empty.unwrap().as_str(), " ", "the first space in an empty string is considered meaningful and should not be trimmed");
 
-        let undefined = String::from_fits_str("");
+        let undefined = String::from_fits_key(&FitsKeyContent::new(""));
         assert!(undefined.is_err(), "parsing a key with a value of \"\" should be undefined");
     }
 
     #[test]
     fn string_unescapes_quotes() {
-        let double_quotes = String::from_fits_str("'Now I''m falling asleep and she''s calling a cab'");
+        let double_quotes = String::from_fits_key(&FitsKeyContent::new("'Now I''m falling asleep and she''s calling a cab'"));
         assert!(double_quotes.is_ok());
         assert_eq!(double_quotes.unwrap(), "Now I'm falling asleep and she's calling a cab");
     }
@@ -261,15 +276,15 @@ mod tests {
     macro_rules! test_real_base {
         ($t:ty, $v:literal) => {
             {
-                let ideal = <$t>::from_fits_str(stringify!($v));
+                let ideal = <$t>::from_fits_key(&FitsKeyContent::new(stringify!($v)));
                 assert!(ideal.is_ok());
                 assert_eq!(ideal.unwrap(), $v);
 
-                let whitespace = <$t>::from_fits_str(concat!("     ", stringify!($v), "   "));
+                let whitespace = <$t>::from_fits_key(&FitsKeyContent::new(concat!("     ", stringify!($v), "   ")));
                 assert!(whitespace.is_ok());
                 assert_eq!(whitespace.unwrap(), $v);
 
-                let positive = <$t>::from_fits_str(concat!('+', stringify!($v)));
+                let positive = <$t>::from_fits_key(&FitsKeyContent::new(concat!('+', stringify!($v))));
                 assert!(positive.is_ok());
                 assert_eq!(positive.unwrap(), $v);
             }
@@ -280,7 +295,7 @@ mod tests {
             {
                 test_real_base!($t, $v);
 
-                let negative = <$t>::from_fits_str(concat!('-', stringify!($v)));
+                let negative = <$t>::from_fits_key(&FitsKeyContent::new(concat!('-', stringify!($v))));
                 assert!(negative.is_ok());
                 assert_eq!(negative.unwrap(), -$v);
             }
@@ -291,13 +306,13 @@ mod tests {
             {
                 test_real_neg!($t, $v);
 
-                let e_exponent = <$t>::from_fits_str(concat!(stringify!($v), "E5"));
+                let e_exponent = <$t>::from_fits_key(&FitsKeyContent::new(concat!(stringify!($v), "E5")));
                 assert!(e_exponent.is_ok());
                 assert_eq!(e_exponent.unwrap(), $v * 100_000.0);
 
                 // FITS floats sometimes encode exponents with the letter D instead of E
                 // https://fits.gsfc.nasa.gov/standard40/fits_standard40aa-le.pdf#Hfootnote.4
-                let d_exponent = <$t>::from_fits_str(concat!(stringify!($v), "D5"));
+                let d_exponent = <$t>::from_fits_key(&FitsKeyContent::new(concat!(stringify!($v), "D5")));
                 assert!(d_exponent.is_ok());
                 assert_eq!(d_exponent.unwrap(), $v * 100_000.0);
             }
@@ -327,25 +342,25 @@ mod tests {
             {
                 let val = Complex::<$t>::new($re, $im);
 
-                let ideal = Complex::<$t>::from_fits_str(concat!('(', stringify!($re), ", ", stringify!($im), ')'));
+                let ideal = Complex::<$t>::from_fits_key(&FitsKeyContent::new(concat!('(', stringify!($re), ", ", stringify!($im), ')')));
                 assert!(ideal.is_ok());
                 assert_eq!(ideal.unwrap(), val);
 
-                let no_parens = Complex::<$t>::from_fits_str(concat!(stringify!($re), ", ", stringify!($im)));
+                let no_parens = Complex::<$t>::from_fits_key(&FitsKeyContent::new(concat!(stringify!($re), ", ", stringify!($im))));
                 assert!(no_parens.is_err());
 
-                let no_comma = Complex::<$t>::from_fits_str(concat!('(', stringify!($re), ' ', stringify!($im), ')'));
+                let no_comma = Complex::<$t>::from_fits_key(&FitsKeyContent::new(concat!('(', stringify!($re), ' ', stringify!($im), ')')));
                 assert!(no_comma.is_err());
 
-                let no_space_after_comma = Complex::<$t>::from_fits_str(concat!('(', stringify!($re), ',', stringify!($im), ')'));
+                let no_space_after_comma = Complex::<$t>::from_fits_key(&FitsKeyContent::new(concat!('(', stringify!($re), ',', stringify!($im), ')')));
                 assert!(no_space_after_comma.is_ok());
                 assert_eq!(no_space_after_comma.unwrap(), val);
 
-                let whitespace_around_parens = Complex::<$t>::from_fits_str(concat!("   (", stringify!($re), ", ", stringify!($im), ")   "));
+                let whitespace_around_parens = Complex::<$t>::from_fits_key(&FitsKeyContent::new(concat!("   (", stringify!($re), ", ", stringify!($im), ")   ")));
                 assert!(whitespace_around_parens.is_ok());
                 assert_eq!(whitespace_around_parens.unwrap(), val);
 
-                let whitespace_around_values = Complex::<$t>::from_fits_str(concat!("(   ", stringify!($re), "   ,   ", stringify!($im), "   )"));
+                let whitespace_around_values = Complex::<$t>::from_fits_key(&FitsKeyContent::new(concat!("(   ", stringify!($re), "   ,   ", stringify!($im), "   )")));
                 assert!(whitespace_around_values.is_ok());
                 assert_eq!(whitespace_around_values.unwrap(), val);
             }
@@ -370,11 +385,11 @@ mod tests {
 
     #[test]
     fn logical() {
-        let t = bool::from_fits_str("T");
+        let t = bool::from_fits_key(&FitsKeyContent::new("T"));
         assert!(t.is_ok());
         assert_eq!(t.unwrap(), true);
 
-        let f_whitespace = bool::from_fits_str("    F   ");
+        let f_whitespace = bool::from_fits_key(&FitsKeyContent::new("    F   "));
         assert!(f_whitespace.is_ok());
         assert_eq!(f_whitespace.unwrap(), false);
     }

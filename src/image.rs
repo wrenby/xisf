@@ -2,11 +2,11 @@ use std::{
     any::TypeId,
     io::Read,
     fmt,
-    str::FromStr, ops::Deref,
+    str::FromStr, ops::Deref, collections::HashMap,
 };
 
 use byteorder::{ReadBytesExt, LE, BE};
-use error_stack::{Report, report, ResultExt};
+use error_stack::{Report, report, Result, ResultExt};
 use libxml::{readonly::RoNode, xpath::Context as XpathContext};
 use ndarray::{ArrayD, IxDyn};
 use num_complex::Complex;
@@ -16,10 +16,12 @@ use strum::{Display, EnumString, EnumVariantNames, VariantNames};
 use uuid::Uuid;
 use crate::{
     data_block::{DataBlock, ByteOrder},
-    error::{ReadDataBlockError, ParseValueError, ReadFitsKeyError, ParseNodeErrorKind::*},
+    error::{ReadDataBlockError, ParseValueError, ReadFitsKeyError, ParseNodeErrorKind::*, ReadPropertyError},
     is_valid_id,
-    ReadOptions,
-    ParseNodeError, MaybeReference,
+    MaybeReference,
+    ParseNodeError,
+    property::{Property, PropertyContent, FromProperty},
+    ReadOptions, XISF,
 };
 
 mod image_data;
@@ -64,7 +66,8 @@ pub struct ImageBase {
     pub id: Option<String>,
     pub uuid: Option<Uuid>,
 
-    fits_header: ListOrderedMultimap<String, FitsKeyValue>,
+    properties: HashMap<String, PropertyContent>,
+    fits_header: ListOrderedMultimap<String, FitsKeyContent>,
     icc_profile: Option<ICCProfile>,
     rgb_working_space: Option<RGBWorkingSpace>,
     display_function: Option<DisplayFunction>,
@@ -106,7 +109,7 @@ impl ImageBase {
     }
 
     // TODO: convert CIE L*a*b images to RGB
-    pub fn read_data(&self, root: &crate::XISF) -> Result<DynImageData, Report<ReadDataBlockError>> {
+    pub fn read_data(&self, root: &crate::XISF) -> Result<DynImageData, ReadDataBlockError> {
         self.data_block.verify_checksum(root)?;
         let reader = &mut *self.data_block.decompressed_bytes(root)?;
 
@@ -162,7 +165,7 @@ impl ImageBase {
     // TODO: handle out of memory errors gracefully instead of panicking, which I assume is the default behavior
     // F1 and F2 have identical signatures, but they need to be separate
     // because two functions with the same signature are not technically the same type according to rust
-    fn read_data_impl<'a, T, F1, F2>(&self, reader: &'a mut dyn Read, read_le: F1, read_be: F2) -> Result<ArrayD<T>, Report<ReadDataBlockError>>
+    fn read_data_impl<'a, T, F1, F2>(&self, reader: &'a mut dyn Read, read_le: F1, read_be: F2) -> Result<ArrayD<T>, ReadDataBlockError>
         where F1: Fn(&'a mut dyn Read, &mut [T]) -> std::io::Result<()>,
         F2: Fn(&'a mut dyn Read, &mut [T]) -> std::io::Result<()>,
         T: Clone + num_traits::Zero {
@@ -185,40 +188,64 @@ impl ImageBase {
         Ok(buf)
     }
 
+    /// Returns true iff an XISF property is present with the given ID
+    pub fn has_property(&self, id: impl AsRef<str>) -> bool {
+        self.properties.contains_key(id.as_ref())
+    }
+
+    /// Attempts to parse an XISF property with the given ID as type T
+    ///
+    /// To read a value and comment pair, use the pattern `let (value, comment) = properties.parse_property("ID", &xisf)?;`
+    pub fn parse_property<T: FromProperty>(&self, id: impl AsRef<str>, root: &XISF) -> Result<T, ReadPropertyError> {
+        let content = self.properties.get(id.as_ref())
+            .ok_or(report!(ReadPropertyError::KeyNotFound))?;
+        T::from_property(&content, root)
+            .change_context(ReadPropertyError::InvalidFormat)
+    }
+    /// Returns the raw content of the XISF property matching the given ID`
+    pub fn raw_property(&self, id: impl AsRef<str>) -> Option<&PropertyContent> {
+        self.properties.get(id.as_ref())
+    }
+    /// Iterates through all XISF properties as (id, type+value+comment) tuples,
+    /// in the order they appear in file, returned as raw unparsed strings/data blocks.
+    pub fn all_raw_properties(&self) -> impl Iterator<Item = (&String, &PropertyContent)> {
+        self.properties.iter()
+    }
+
     /// Returns true iff the given FITS key is present in the header
-    pub fn fits_contains_key(&self, name: impl AsRef<str>) -> bool {
+    pub fn has_fits_key(&self, name: impl AsRef<str>) -> bool {
         self.fits_header.get(name.as_ref()).is_some()
     }
     /// Attempts to parse a FITS key with the given name as type `T`, following the syntax laid out in
     /// [section 4.1](https://fits.gsfc.nasa.gov/standard40/fits_standard40aa-le.pdf#subsection.4.1) of the FITS specification.
     /// If there is more than one key present with the given name, only the first one is returned.
-    pub fn fits_parse_key<T: FromFitsStr>(&self, name: impl AsRef<str>) -> Result<T, Report<ReadFitsKeyError>> {
-        let tup = self.fits_header.get(name.as_ref())
+    pub fn parse_fits_key<T: FromFitsKey>(&self, name: impl AsRef<str>) -> Result<T, ReadFitsKeyError> {
+        let content = self.fits_header.get(name.as_ref())
             .ok_or(report!(ReadFitsKeyError::KeyNotFound))?;
-        T::from_fits_str(tup.value.as_str())
+        T::from_fits_key(content)
             .change_context(ReadFitsKeyError::InvalidFormat)
     }
     /// Returns an iterator over all values in the FITS header matching the given name.
     /// Each key is attempted to be parsed as type `T`, following the syntax laid out in
     /// [section 4.1](https://fits.gsfc.nasa.gov/standard40/fits_standard40aa-le.pdf#subsection.4.1) of the FITS specification.
-    pub fn fits_parse_keys<T: FromFitsStr>(&self, name: impl AsRef<str>) -> impl Iterator<Item = Result<T, Report<ParseValueError>>> + '_ {
+    pub fn parse_fits_keys<T: FromFitsKey>(&self, name: impl AsRef<str>) -> impl Iterator<Item = Result<T, ParseValueError>> + '_ {
         self.fits_header.get_all(name.as_ref())
-            .map(|FitsKeyValue { value: val, .. }| T::from_fits_str(val))
+            .map(|content| T::from_fits_key(content))
     }
     /// Returns the raw string (both value and comment) of the FITS key matching the given name
     /// As of the time of writing, this is the only way to get comments from the FITS header
-    pub fn fits_raw_key(&self, name: impl AsRef<str>) -> Option<&FitsKeyValue> {
+    pub fn raw_fits_key(&self, name: impl AsRef<str>) -> Option<&FitsKeyContent> {
         self.fits_header.get(name.as_ref())
     }
     /// Returns an iterator over all values (and comments) of keys in the FITS header matching the given name.
     /// Although most keys are only allowed to appear once in a header, this is especially useful for the HISTORY keyword,
     /// which is typically appended each time the image is processed in some way
-    pub fn fits_raw_keys(&self, name: impl AsRef<str>) -> impl Iterator<Item = &FitsKeyValue> {
+    pub fn raw_fits_keys(&self, name: impl AsRef<str>) -> impl Iterator<Item = &FitsKeyContent> {
         self.fits_header.get_all(name.as_ref())
     }
     /// Iterates through all FITS keys as (key, value+comment) tuples,
     /// in the order they appear in file, returned as raw unparsed strings.
-    pub fn fits_all_raw_keys(&self) -> impl Iterator<Item = (&String, &FitsKeyValue)> {
+    pub fn all_raw_fits_keys(&self) -> impl Iterator<Item = (&String, &FitsKeyContent)> {
         self.fits_header.iter()
     }
 
@@ -252,7 +279,7 @@ pub struct Image {
 }
 
 
-fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts: &ReadOptions) -> Result<Image, Report<ParseNodeError>> {
+fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts: &ReadOptions) -> Result<Image, ParseNodeError> {
     let is_thumbnail = TypeId::of::<T>() == TypeId::of::<Thumbnail>();
 
     let context = |kind| -> ParseNodeError {
@@ -268,7 +295,9 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
     // saying we don't know what so-and-so attribute means
     let mut attrs = node.get_attributes();
 
-    let data_block = DataBlock::parse_node(node, T::TAG_NAME, &mut attrs)?;
+    let data_block = DataBlock::parse_node(node, T::TAG_NAME, &mut attrs)?
+        .ok_or(context(MissingAttr))
+        .attach_printable("Missing location attribute: Image elements must have a data block")?;
 
     let mut geometry: Vec<usize> = vec![];
     if let Some(dims) = attrs.remove("geometry") {
@@ -396,7 +425,8 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
         tracing::warn!("Ignoring unrecognized attribute {}=\"{}\"", remaining.0, remaining.1);
     }
 
-    let mut fits_header = ListOrderedMultimap::<String, FitsKeyValue>::new();
+    let mut properties = HashMap::new();
+    let mut fits_header = ListOrderedMultimap::new();
     let mut icc_profile = None;
     let mut rgb_working_space = None;
     let mut display_function = None;
@@ -428,10 +458,16 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
         }
 
         match child.get_name().as_str() {
+            "Property" => {
+                let prop = Property::parse_node(child)?;
+                if properties.insert(prop.id.clone(), prop.content).is_some() {
+                    tracing::warn!("Duplicate property found with id {} -- discarding the previous one", prop.id);
+                }
+            }
             "FITSKeyword" if opts.import_fits_keywords => {
                 let key = FitsKeyword::parse_node(child)?;
-                let val_comm = FitsKeyValue { value: key.value, comment: key.comment };
-                fits_header.append(key.name, val_comm);
+                fits_header.append(key.name, key.content);
+                // TODO: respect fits_keywords_as_properties option
             },
             "ICCProfile" => parse_optional!(ICCProfile, icc_profile),
             "RGBWorkingSpace" => parse_optional!(RGBWorkingSpace, rgb_working_space),
@@ -474,6 +510,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
             id,
             uuid,
 
+            properties,
             fits_header,
             icc_profile,
             rgb_working_space,
@@ -503,7 +540,7 @@ impl Deref for Image {
 }
 
 impl Image {
-    pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext, opts: &ReadOptions) -> Result<Self, Report<ParseNodeError>> {
+    pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext, opts: &ReadOptions) -> Result<Self, ParseNodeError> {
         parse_image::<Self>(node, xpath, opts)
     }
 
@@ -622,7 +659,7 @@ impl fmt::Display for Orientation {
 }
 impl FromStr for Orientation {
     type Err = Report<ParseValueError>;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
+    fn from_str(s: &str) -> Result<Self, ParseValueError> {
         match s {
             "0" => Ok(Self { rotation: Rotation::None, hflip: false }),
             "flip" => Ok(Self { rotation: Rotation::None, hflip: true }),

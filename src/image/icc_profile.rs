@@ -27,7 +27,9 @@ impl ICCProfile {
         if let Some(_byte_order) = attrs.remove("byteOrder") {
             Err(report(InvalidAttr)).attach_printable("byteOrder attribute is not allowed on ICCProfile elements as they are always big-endian")
         } else {
-            let mut data_block = DataBlock::parse_node(node, "ICCProfile", &mut attrs)?;
+            let mut data_block = DataBlock::parse_node(node, "ICCProfile", &mut attrs)?
+                .ok_or(context(MissingAttr))
+                .attach_printable("Missing location attribute: ICCProfile elements must have a data block")?;
             data_block.byte_order = ByteOrder::Big;
 
             for remaining in attrs.into_iter() {
@@ -45,6 +47,7 @@ impl ICCProfile {
 
     pub fn read_data(&self, root: &XISF) -> Result<Vec<u8>, Report<ReadDataBlockError>> {
         let mut buf = vec![];
+        self.data_block.verify_checksum(root)?;
         self.data_block.decompressed_bytes(root)?
             .read_to_end(&mut buf)
             .change_context(ReadDataBlockError)?;

@@ -17,21 +17,22 @@ Monolithic Files | Decode | Encode + Decode | Encode + Decode
 Distributed Files | <details><summary>Decode (Partial)</summary>Supported schemes: `file`, `http`/`https` (basic auth not supported), and `ftp` (credentials must be encoded in URI). No local caching; no XISB files.</details> | ❌ | ❌
 N-D Images | ✅ | [❌](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816) | [❌](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001)
 Pixel Sample Formats | Scalar, Complex | Agnostic (Raw Bytes Only) | Scalar<sup>1</sup>, Complex
-Image Metadata | <details>Attributes, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA, Resolution, Thumbnail</details> | <details>Attributes<sup>2</sup>, XISF Properties<sup>3</sup>, FITS Keywords<sup>4</sup>, ICC Profile, CFA, Thumbnail</details> | <details>Attributes<sup>5</sup>, XISF Properties, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA, Resolution, Thumbnail</details>
-Supported XISF Property Locations | ❌ | `<Image>` | `<Image>`, `<Metadata>`, `<xisf>`
+Image Metadata | <details>Attributes, XISF Properties<sup>2</sup>, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA, Resolution, Thumbnail</details> | <details>Attributes<sup>3</sup>, XISF Properties<sup>4</sup>, FITS Keywords<sup>5</sup>, ICC Profile, CFA, Thumbnail</details> | <details>Attributes<sup>6</sup>, XISF Properties, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA, Resolution, Thumbnail</details>
+Supported XISF Property Locations | `<Image>`, `<xisf>` | `<Image>` | `<Image>`, `<Metadata>`, `<xisf>`
 `<Table>` Element | ❌ | ❌ | ❌
 `<Reference>` Element | ✅ | ❌ | ❌
-Data Block Compression | <details><summary>✅<sup>6</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>✅<sup>6, 7</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>✅<sup>6</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details>
+Data Block Compression | <details><summary>✅<sup>7</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>✅<sup>7, 8</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>✅<sup>7</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details>
 Checksum Verification | ✅ | ❌ | ✅
 XML Digital Signature Verification | ❌ | ❌ | ❌
 
 1. [Does not support 64-bit integers](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L599)
-2. [Only mandatory attributes and colorSpace](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L815)
-3. [Int32, Float32, Float64, String, and TimePoint only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/variant.cpp#L379)
-4. Raw strings only; cannot parse values
-5. [Missing imageType, offset, orientation, and uuid attributes](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L674)
-6. `zstd` support is nonstandard for spec version 1.0, but [has been confirmed for an upcoming version of the standard](https://pixinsight.com/forum/index.php?threads/xisf-standard-revision-re-zstd.21230/)
-7. Sub-blocks not yet supported (this limits supported images to 4GiB)
+2. Scalar, Complex, String, and TimePoint only; no 128-bit floating point values
+3. [Only mandatory attributes and colorSpace](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L815)
+4. [Int32, Float32, Float64, String, and TimePoint only](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/variant.cpp#L379)
+5. Raw strings only; cannot parse values
+6. [Missing imageType, offset, orientation, and uuid attributes](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L674)
+7. `zstd` support is nonstandard for spec version 1.0, but [has been confirmed for an upcoming version of the standard](https://pixinsight.com/forum/index.php?threads/xisf-standard-revision-re-zstd.21230/)
+8. Sub-blocks not yet supported (this limits supported images to 4GiB)
 
 ## Dependencies
 - Minimum Supported Rust Version (MSRV): 1.64.0, verified for `x86_64-unknown-linux-gnu`
@@ -56,8 +57,9 @@ XML Digital Signature Verification | ❌ | ❌ | ❌
   - [ ] Caching <!-- `tempfile`, `stat` crates; HTTP headers -->
   - [ ] XISB files
 - [x] Non-`<Property>` image metadata
+- [x] Scalar, Complex, String, and TimePoint `<Property>` elements
 - [ ] Write monolithic files
-- [ ] Scalar, Complex, String, and TimePoint `<Property>` elements
+- [ ] `<Table>` element
 - [ ] Vector, Matrix `<Property>` elements
 - [ ] Write distributed files
 - [ ] Color space conversion?

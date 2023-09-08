@@ -28,6 +28,22 @@ impl Display for ReadFitsKeyError {
 }
 impl Error for ReadFitsKeyError {}
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ReadPropertyError {
+    KeyNotFound,
+    InvalidFormat,
+}
+impl Display for ReadPropertyError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Failed to read XISF property: ")?;
+        match self {
+            &Self::KeyNotFound => f.write_str("ID not found"),
+            &Self::InvalidFormat => f.write_str("Failed to parse value"),
+        }
+    }
+}
+impl Error for ReadPropertyError {}
+
 /// A failure to either parse or resolve a `<Reference>` XML element
 ///
 /// Enum variants are listed in order of precedence, e.g. if the parser encounters the node
@@ -91,12 +107,14 @@ impl Error for ParseNodeError {}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ReadDataBlockError;
+// TODO: UntrustedHost
+// TODO: Unauthorized
 impl Display for ReadDataBlockError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("Failed to read bytes from XISF data block")
     }
-}
-impl Error for ReadDataBlockError {}
+}impl Error for ReadDataBlockError {}
+
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ReadFileError;

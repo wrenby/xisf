@@ -20,7 +20,7 @@
 
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use error_stack::{Report, ResultExt, report};
+use error_stack::{Report, Result, ResultExt, report};
 use libxml::{
     parser::Parser as XmlParser,
     readonly::RoNode,
@@ -30,7 +30,7 @@ use std::{
     ffi::CStr,
     fs::File,
     io::{BufReader, Read},
-    path::{Path, PathBuf},
+    path::{Path, PathBuf}, collections::HashMap,
 };
 
 pub mod error;
@@ -44,6 +44,11 @@ use image::Image;
 
 mod reference;
 pub(crate) use reference::*;
+
+mod property;
+use property::*;
+
+use crate::error::ReadPropertyError;
 
 /// Flags to alter the behavior of the reader
 #[non_exhaustive]
@@ -118,13 +123,15 @@ const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
     ParseNodeError::new("xisf", kind)
 }
 
+// TODO: separate XISF things from the data block reading
 #[derive(Clone, Debug)]
 pub struct XISF {
     source: Source,
     images: Vec<Image>,
+    properties: HashMap<String, PropertyContent>,
 }
 impl XISF {
-    pub fn read_file(filename: impl AsRef<Path>, opts: &ReadOptions) -> Result<Self, Report<ReadFileError>> {
+    pub fn read_file(filename: impl AsRef<Path>, opts: &ReadOptions) -> Result<Self, ReadFileError> {
         let filename_path = filename.as_ref();
         let filename_str = filename_path.to_string_lossy().to_string();
         let _span_guard = tracing::debug_span!("read_file", filename = filename_str).entered();
@@ -249,7 +256,7 @@ impl XISF {
         }
     }
 
-    fn parse_root_node(node: RoNode, xpath: &XpathContext, source: Source, opts: &ReadOptions) -> Result<XISF, Report<ParseNodeError>> {
+    fn parse_root_node(node: RoNode, xpath: &XpathContext, source: Source, opts: &ReadOptions) -> Result<XISF, ParseNodeError> {
 
         // * this is mutable because we use .remove() instead of .get()
         // that way, after we've extracted everything we recognize,
@@ -276,10 +283,17 @@ impl XISF {
         }
 
         let mut images = vec![];
+        let mut properties = HashMap::new();
         for mut child in node.get_child_nodes() {
             child = child.follow_reference(xpath).change_context(context(InvalidReference))?;
             match child.get_name().as_str() {
                 "Image" => images.push(Image::parse_node(child, xpath, opts)?),
+                "Property" => {
+                    let prop = Property::parse_node(child)?;
+                    if properties.insert(prop.id.clone(), prop.content).is_some() {
+                        tracing::warn!("Duplicate property found with id {} -- discarding the previous one", prop.id);
+                    }
+                }
                 // TODO: check if the unrecognized node has a uid tag with a reference to it somewhere before emitting a warning
                 _ => tracing::warn!("Ignoring unrecognized child node <{}>", child.get_name()),
             }
@@ -288,6 +302,7 @@ impl XISF {
         Ok(XISF {
             source,
             images,
+            properties,
         })
     }
 
@@ -312,5 +327,29 @@ impl XISF {
     /// If `i` is outside the range `0..num_images()`
     pub fn get_image(&self, i: usize) -> &Image {
         &self.images[i]
+    }
+
+    /// Returns true iff an XISF property is present with the given ID
+    pub fn has_property(&self, id: impl AsRef<str>) -> bool {
+        self.properties.contains_key(id.as_ref())
+    }
+
+    /// Attempts to parse an XISF property with the given ID as type T
+    ///
+    /// To read a value and comment pair, use the pattern `let (value, comment) = properties.parse_property("ID", &xisf)?;`
+    pub fn parse_property<T: FromProperty>(&self, id: impl AsRef<str>, root: &XISF) -> Result<T, ReadPropertyError> {
+        let content = self.properties.get(id.as_ref())
+            .ok_or(report!(ReadPropertyError::KeyNotFound))?;
+        T::from_property(&content, root)
+            .change_context(ReadPropertyError::InvalidFormat)
+    }
+    /// Returns the raw content of the XISF property matching the given ID`
+    pub fn raw_property(&self, id: impl AsRef<str>) -> Option<&PropertyContent> {
+        self.properties.get(id.as_ref())
+    }
+    /// Iterates through all XISF properties as (id, type+value+comment) tuples,
+    /// in the order they appear in file, returned as raw unparsed strings/data blocks.
+    pub fn all_raw_properties(&self) -> impl Iterator<Item = (&String, &PropertyContent)> {
+        self.properties.iter()
     }
 }

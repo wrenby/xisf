@@ -40,11 +40,12 @@ pub struct DataBlock {
     pub compression: Option<Compression>,
 }
 impl DataBlock {
-    // returns Ok(_) if a data block was successfully parsed
-    // returns Err(_) if there was an error parsing the data block, or there was no data block to parse
+    // returns Ok(Some(_)) if a data block was successfully parsed
+    // returns Ok(None) if there was no data block to parse
+    // returns Err(_) if there was an error parsing the data block
     // passing &mut attrs isn't for the benefit of this function, but the caller function
     // (helps cut down on unnecessary "ignoring unrecognized attribute" warnings)
-    pub(crate) fn parse_node(node: RoNode, tag: &'static str, attrs: &mut HashMap<String, String>) -> Result<Self, ParseNodeError> {
+    pub(crate) fn parse_node(node: RoNode, tag: &'static str, attrs: &mut HashMap<String, String>) -> Result<Option<Self>, ParseNodeError> {
         let context = |kind| -> ParseNodeError {
             ParseNodeError::new(tag, kind)
         };
@@ -119,14 +120,14 @@ impl DataBlock {
                 }
             };
 
-            Ok(DataBlock {
+            Ok(Some(DataBlock {
                 location,
                 byte_order,
                 checksum,
                 compression,
-            })
+            }))
         } else {
-            Err(context(MissingAttr)).attach_printable(format!("Missing location attribute: {tag} elements must have a data block"))
+            Ok(None)
         }
     }
 
@@ -135,7 +136,7 @@ impl DataBlock {
             let mut hasher = D::new();
             std::io::copy(reader, &mut hasher)
                 .change_context(ReadDataBlockError)
-                .attach_printable("Failed to calculate image hash")?;
+                .attach_printable("Failed to calculate data block hash")?;
             let actual = hasher.finalize();
             if actual.as_slice() == expected {
                 Ok(())
@@ -492,6 +493,7 @@ impl Location {
 
     pub fn is_remote(&self) -> bool {
         match self {
+            // TODO: check if host is localhost
             Self::Url { url, .. } if url.has_host() => true,
             _ => false,
         }
@@ -959,6 +961,7 @@ mod tests {
         let xisf = XISF {
             source: Source::DistributedFile("tests/files/".into()),
             images: vec![],
+            properties: HashMap::new(),
         };
         let mut reader = local.location.raw_bytes(&xisf).unwrap();
         let mut array: Array3<u8> = Array3::zeros((200, 250, 3)); // 200x250 RGB
@@ -986,6 +989,7 @@ mod tests {
         let xisf = XISF {
             source: Source::DistributedFile("tests/files/".into()),
             images: vec![],
+            properties: HashMap::new(),
         };
         let mut reader = http.location.raw_bytes(&xisf).unwrap();
         let mut array: Array3<u8> = Array3::zeros((200, 250, 3)); // 200x250 RGB
@@ -1020,6 +1024,7 @@ mod tests {
         let xisf = XISF {
             source: Source::DistributedFile("tests/files/".into()),
             images: vec![],
+            properties: HashMap::new(),
         };
         let mut reader = ftp.location.raw_bytes(&xisf).unwrap();
         let mut array: Array3<u8> = Array3::zeros((200, 250, 3)); // 200x250 RGB
