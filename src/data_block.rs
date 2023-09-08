@@ -28,7 +28,7 @@ use crate::{
         ParseNodeErrorKind::{self, *},
         ReadDataBlockError
     },
-    XISF,
+    Context,
     Source
 };
 
@@ -131,7 +131,7 @@ impl DataBlock {
         }
     }
 
-    pub(crate) fn verify_checksum(&self, root: &XISF) -> Result<(), ReadDataBlockError> {
+    pub(crate) fn verify_checksum(&self, ctx: &Context) -> Result<(), ReadDataBlockError> {
         fn verify_checksum_impl<D: Digest + Write>(expected: &[u8], reader: &mut impl Read) -> Result<(), ReadDataBlockError> {
             let mut hasher = D::new();
             std::io::copy(reader, &mut hasher)
@@ -149,7 +149,7 @@ impl DataBlock {
         }
 
         if let Some(checksum) = &self.checksum {
-            let mut reader = self.location.raw_bytes(&root)?;
+            let mut reader = self.location.raw_bytes(&ctx)?;
             match checksum {
                 Checksum::Sha1(digest) => verify_checksum_impl::<Sha1>(digest, &mut reader),
                 Checksum::Sha256(digest) => verify_checksum_impl::<Sha256>(digest, &mut reader),
@@ -163,8 +163,8 @@ impl DataBlock {
     }
 
     /// Will duplicate in-memory if byte-shuffling is enabled
-    pub(crate) fn decompressed_bytes(&self, root: &XISF) -> Result<Box<dyn Read>, ReadDataBlockError> {
-        self.location.decompressed_bytes(root, &self.compression)
+    pub(crate) fn decompressed_bytes(&self, ctx: &Context) -> Result<Box<dyn Read>, ReadDataBlockError> {
+        self.location.decompressed_bytes(ctx, &self.compression)
     }
 }
 
@@ -325,7 +325,7 @@ impl Location {
     }
 
     /// Literally just a byte stream, with no knowledge of compression, byte shuffling, or checksums
-    pub(crate) fn raw_bytes(&self, xisf: &crate::XISF) -> Result<Box<dyn Read>, ReadDataBlockError> {
+    pub(crate) fn raw_bytes(&self, ctx: &Context) -> Result<Box<dyn Read>, ReadDataBlockError> {
         let base64 = base64_simd::STANDARD;
         match self {
             Self::Plaintext { encoding, text } => {
@@ -338,7 +338,7 @@ impl Location {
                 Ok(Box::new(Cursor::new(buf)))
             },
             Self::Attachment { position, size } => {
-                if let Source::MonolithicFile(filename) = &xisf.source {
+                if let Source::MonolithicFile(filename) = &ctx.source {
                     let mut file = File::open(filename)
                         .change_context(ReadDataBlockError)?;
                     file.seek(io::SeekFrom::Start(*position))
@@ -351,7 +351,7 @@ impl Location {
             },
             #[allow(unused_variables)]
             Self::Url { url, index_id: None } => {
-                if let Source::DistributedFile(_) = &xisf.source {
+                if let Source::DistributedFile(_) = &ctx.source {
                     match url.scheme() {
                         "file" => {
                             let file = File::open(url.path())
@@ -398,7 +398,7 @@ impl Location {
                 todo!()
             },
             Self::Path { path, index_id: None } => {
-                if let Source::DistributedFile(directory) = &xisf.source {
+                if let Source::DistributedFile(directory) = &ctx.source {
                     if path.starts_with("@header_dir/") {
                         let mut path_buf = directory.clone();
                         // this unwrap is safe because we just checked that it starts with @header_dir/
@@ -424,8 +424,8 @@ impl Location {
     }
 
     /// Will duplicate in-memory if byte-shuffling is enabled
-    pub(crate) fn decompressed_bytes(&self, xisf: &crate::XISF, compression: &Option<Compression>) -> Result<Box<dyn Read>, ReadDataBlockError> {
-        let raw = self.raw_bytes(xisf)?;
+    pub(crate) fn decompressed_bytes(&self, ctx: &Context, compression: &Option<Compression>) -> Result<Box<dyn Read>, ReadDataBlockError> {
+        let raw = self.raw_bytes(ctx)?;
         if let Some(compression) = compression {
             let uncompressed_sizes: Vec<_> = compression.sub_blocks.0.iter().map(|tup| tup.0).collect();
             match compression.algorithm {
@@ -871,7 +871,7 @@ impl FromStr for CompressionAttr {
 
 /// Tuples of (compressed size, uncompressed size)
 #[derive(Clone, PartialEq)]
-pub struct SubBlocks(pub Vec<(usize, usize)>); // TODO: NonZeroUsize, also consider if putting in the work to change this to u64 actually gets me anything
+pub(crate) struct SubBlocks(pub Vec<(usize, usize)>); // TODO: NonZeroUsize, also consider if putting in the work to change this to u64 actually gets me anything
 impl fmt::Debug for SubBlocks {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -958,12 +958,8 @@ mod tests {
             checksum: None,
             compression: None,
         };
-        let xisf = XISF {
-            source: Source::DistributedFile("tests/files/".into()),
-            images: vec![],
-            properties: HashMap::new(),
-        };
-        let mut reader = local.location.raw_bytes(&xisf).unwrap();
+        let ctx = Context::distributed("tests/files/");
+        let mut reader = local.location.raw_bytes(&ctx).unwrap();
         let mut array: Array3<u8> = Array3::zeros((200, 250, 3)); // 200x250 RGB
         reader.read_exact(array.as_slice_mut().unwrap()).unwrap();
         check_gradient(&array);
@@ -972,7 +968,7 @@ mod tests {
             location: Location::Path { path: "@header_dir/gradient.bin".into(), index_id: None },
             ..local
         };
-        let mut reader = relative.location.raw_bytes(&xisf).unwrap();
+        let mut reader = relative.location.raw_bytes(&ctx).unwrap();
         reader.read_exact(array.as_slice_mut().unwrap()).unwrap();
         check_gradient(&array);
     }
@@ -986,12 +982,8 @@ mod tests {
             checksum: None,
             compression: None,
         };
-        let xisf = XISF {
-            source: Source::DistributedFile("tests/files/".into()),
-            images: vec![],
-            properties: HashMap::new(),
-        };
-        let mut reader = http.location.raw_bytes(&xisf).unwrap();
+        let ctx = Context::distributed("tests/files/");
+        let mut reader = http.location.raw_bytes(&ctx).unwrap();
         let mut array: Array3<u8> = Array3::zeros((200, 250, 3)); // 200x250 RGB
         reader.read_exact(array.as_slice_mut().unwrap()).unwrap();
         check_gradient(&array);
@@ -1021,12 +1013,8 @@ mod tests {
             checksum: None,
             compression: None,
         };
-        let xisf = XISF {
-            source: Source::DistributedFile("tests/files/".into()),
-            images: vec![],
-            properties: HashMap::new(),
-        };
-        let mut reader = ftp.location.raw_bytes(&xisf).unwrap();
+        let ctx = Context::distributed("tests/files/");
+        let mut reader = ftp.location.raw_bytes(&ctx).unwrap();
         let mut array: Array3<u8> = Array3::zeros((200, 250, 3)); // 200x250 RGB
         reader.read_exact(array.as_slice_mut().unwrap()).unwrap();
         check_gradient(&array);

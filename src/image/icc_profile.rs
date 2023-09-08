@@ -2,9 +2,9 @@ use error_stack::{Report, report, ResultExt};
 use libxml::readonly::RoNode;
 
 use crate::{
+    Context,
     data_block::{DataBlock, ByteOrder},
     error::{ParseNodeError, ParseNodeErrorKind::{self, *}, ReadDataBlockError},
-    XISF
 };
 
 fn report(kind: ParseNodeErrorKind) -> Report<ParseNodeError> {
@@ -45,10 +45,10 @@ impl ICCProfile {
         }
     }
 
-    pub fn read_data(&self, root: &XISF) -> Result<Vec<u8>, Report<ReadDataBlockError>> {
+    pub fn read_data(&self, ctx: &Context) -> Result<Vec<u8>, Report<ReadDataBlockError>> {
         let mut buf = vec![];
-        self.data_block.verify_checksum(root)?;
-        self.data_block.decompressed_bytes(root)?
+        self.data_block.verify_checksum(ctx)?;
+        self.data_block.decompressed_bytes(ctx)?
             .read_to_end(&mut buf)
             .change_context(ReadDataBlockError)?;
         Ok(buf)

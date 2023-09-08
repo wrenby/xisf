@@ -15,13 +15,14 @@ use parse_int::parse as parse_auto_radix;
 use strum::{Display, EnumString, EnumVariantNames, VariantNames};
 use uuid::Uuid;
 use crate::{
+    Context,
     data_block::{DataBlock, ByteOrder},
     error::{ReadDataBlockError, ParseValueError, ReadFitsKeyError, ParseNodeErrorKind::*, ReadPropertyError},
     is_valid_id,
     MaybeReference,
     ParseNodeError,
     property::{Property, PropertyContent, FromProperty},
-    ReadOptions, XISF,
+    ReadOptions,
 };
 
 mod image_data;
@@ -109,9 +110,9 @@ impl ImageBase {
     }
 
     // TODO: convert CIE L*a*b images to RGB
-    pub fn read_data(&self, root: &crate::XISF) -> Result<DynImageData, ReadDataBlockError> {
-        self.data_block.verify_checksum(root)?;
-        let reader = &mut *self.data_block.decompressed_bytes(root)?;
+    pub fn read_data(&self, ctx: &Context) -> Result<DynImageData, ReadDataBlockError> {
+        self.data_block.verify_checksum(ctx)?;
+        let reader = &mut *self.data_block.decompressed_bytes(ctx)?;
 
         macro_rules! read_real {
             ($func:ident) => {
@@ -196,10 +197,10 @@ impl ImageBase {
     /// Attempts to parse an XISF property with the given ID as type T
     ///
     /// To read a value and comment pair, use the pattern `let (value, comment) = properties.parse_property("ID", &xisf)?;`
-    pub fn parse_property<T: FromProperty>(&self, id: impl AsRef<str>, root: &XISF) -> Result<T, ReadPropertyError> {
+    pub fn parse_property<T: FromProperty>(&self, id: impl AsRef<str>, ctx: &Context) -> Result<T, ReadPropertyError> {
         let content = self.properties.get(id.as_ref())
             .ok_or(report!(ReadPropertyError::KeyNotFound))?;
-        T::from_property(&content, root)
+        T::from_property(&content, ctx)
             .change_context(ReadPropertyError::InvalidFormat)
     }
     /// Returns the raw content of the XISF property matching the given ID`

@@ -47,7 +47,7 @@ fn main() {
     let mut args = pico_args::Arguments::from_env();
     let input: String = args.value_from_str("--in").expect("--in");
 
-    let xisf = xisf_rs::XISF::read_file(input, &Default::default()).expect("parse header");
+    let (xisf, ctx) = xisf_rs::XISF::read_file(input, &Default::default()).expect("parse header");
     println!("{xisf:#?}");
 
     // passing the file as a &mut Option because we want to do something different the first time this is run
@@ -92,7 +92,7 @@ fn main() {
     let mut fits = None;
     let out: String = args.value_from_str("--out").expect("--out");
     for (i, image) in xisf.images().enumerate() {
-        let data = image.read_data(&xisf).expect(format!("read image {i} data").as_str());
+        let data = image.read_data(&ctx).expect(format!("read image {i} data").as_str());
         let name = image.id.clone().unwrap_or(format!("IMAGE_{i}"));
         match data {
             DynImageData::UInt8(arr) => write_array(&mut fits, &out, arr, name, ImageType::UnsignedByte),

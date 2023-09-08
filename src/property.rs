@@ -7,7 +7,7 @@ use time::{OffsetDateTime, format_description::well_known::Iso8601};
 use crate::{
     data_block::DataBlock,
     error::{ParseValueError, ParseNodeError, ParseNodeErrorKind::{self, *}},
-    XISF, reference::is_valid_id
+    reference::is_valid_id, Context
 };
 
 #[repr(u8)]
@@ -247,11 +247,11 @@ pub struct PropertyContent {
 }
 
 pub trait FromProperty: Sized {
-    fn from_property(prop: &PropertyContent, root: &XISF) -> Result<Self, ParseValueError>;
+    fn from_property(prop: &PropertyContent, ctx: &Context) -> Result<Self, ParseValueError>;
 }
 
 impl FromProperty for bool {
-    fn from_property(prop: &PropertyContent, _root: &XISF) -> Result<Self, ParseValueError> {
+    fn from_property(prop: &PropertyContent, _ctx: &Context) -> Result<Self, ParseValueError> {
         const CONTEXT: ParseValueError = ParseValueError("XISF Property as bool");
         if prop.r#type == PropertyType::Boolean {
             match &prop.value {
@@ -272,7 +272,7 @@ impl FromProperty for bool {
 macro_rules! from_property_scalar {
     ($variant:ident, $t:ty) => {
         impl FromProperty for $t {
-            fn from_property(prop: &PropertyContent, _root: &XISF) -> Result<Self, ParseValueError> {
+            fn from_property(prop: &PropertyContent, _ctx: &Context) -> Result<Self, ParseValueError> {
                 const CONTEXT: ParseValueError = ParseValueError(concat!("XISF Property key as ", stringify!($t)));
                 if prop.r#type == PropertyType::$variant {
                     if let PropertyValue::Plaintext(text) = &prop.value {
@@ -306,7 +306,7 @@ from_property_scalar!(Float64, f64);
 macro_rules! from_property_complex {
     ($variant:ident, $t:ty) => {
         impl FromProperty for Complex<$t> {
-            fn from_property(prop: &PropertyContent, _root: &XISF) -> Result<Self, ParseValueError> {
+            fn from_property(prop: &PropertyContent, _ctx: &Context) -> Result<Self, ParseValueError> {
                 const CONTEXT: ParseValueError = ParseValueError(concat!("XISF Property key as Complex<", stringify!($t), '>'));
                 if prop.r#type == PropertyType::$variant {
                     if let PropertyValue::Plaintext(text) = &prop.value {
@@ -344,15 +344,15 @@ from_property_complex!(Complex64, f64);
 // TODO: from_property_complex!(Complex64, f128);
 
 impl FromProperty for String {
-    fn from_property(prop: &PropertyContent, root: &XISF) -> Result<Self, ParseValueError> {
+    fn from_property(prop: &PropertyContent, ctx: &Context) -> Result<Self, ParseValueError> {
         const CONTEXT: ParseValueError = ParseValueError("XISF Property as String");
         if prop.r#type == PropertyType::String {
             match &prop.value {
                 PropertyValue::Plaintext(text) => Ok(text.clone()),
                 PropertyValue::DataBlock(block) => {
-                    block.verify_checksum(root)
+                    block.verify_checksum(ctx)
                         .change_context(CONTEXT)?;
-                    let mut reader = block.decompressed_bytes(root)
+                    let mut reader = block.decompressed_bytes(ctx)
                         .change_context(CONTEXT)?;
 
                     let mut string = String::new();
@@ -369,7 +369,7 @@ impl FromProperty for String {
 }
 
 impl FromProperty for OffsetDateTime {
-    fn from_property(prop: &PropertyContent, _root: &XISF) -> Result<Self, ParseValueError> {
+    fn from_property(prop: &PropertyContent, _ctx: &Context) -> Result<Self, ParseValueError> {
         const CONTEXT: ParseValueError = ParseValueError(concat!("XISF Property key as ", stringify!($t)));
         if prop.r#type == PropertyType::TimePoint {
             if let PropertyValue::Plaintext(text) = &prop.value {
@@ -387,7 +387,7 @@ impl FromProperty for OffsetDateTime {
 
 // TODO: this is recursive
 impl<T: FromProperty> FromProperty for (T, Option<String>) {
-    fn from_property(prop: &PropertyContent, root: &XISF) -> Result<Self, ParseValueError> {
-        Ok((T::from_property(prop, root)?, prop.comment.clone()))
+    fn from_property(prop: &PropertyContent, ctx: &Context) -> Result<Self, ParseValueError> {
+        Ok((T::from_property(prop, ctx)?, prop.comment.clone()))
     }
 }

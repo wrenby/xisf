@@ -34,7 +34,7 @@ use std::{
 };
 
 pub mod error;
-use error::{ParseNodeError, ParseNodeErrorKind::{self, *}, ReadFileError};
+use error::{ParseNodeError, ParseNodeErrorKind::{self, *}, ReadFileError, ReadPropertyError};
 
 pub mod data_block;
 use data_block::{ChecksumAlgorithm, CompressionAlgorithm, CompressionLevel};
@@ -48,7 +48,8 @@ pub(crate) use reference::*;
 mod property;
 use property::*;
 
-use crate::error::ReadPropertyError;
+mod metadata;
+pub use metadata::Metadata;
 
 /// Flags to alter the behavior of the reader
 #[non_exhaustive]
@@ -116,6 +117,27 @@ pub(crate) enum Source {
     DistributedFile(PathBuf),
 }
 
+#[derive(Clone, Debug)]
+pub struct Context {
+    source: Source,
+}
+impl Context {
+    #[cfg(test)]
+    pub(crate) fn distributed(path: impl Into<PathBuf>) -> Self {
+        Self {
+            source: Source::DistributedFile(path.into())
+        }
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn monolithic(filename: impl Into<PathBuf>) -> Self {
+        Self {
+            source: Source::MonolithicFile(filename.into())
+        }
+    }
+}
+
 fn report(kind: ParseNodeErrorKind) -> Report<ParseNodeError> {
     report!(context(kind))
 }
@@ -123,15 +145,14 @@ const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
     ParseNodeError::new("xisf", kind)
 }
 
-// TODO: separate XISF things from the data block reading
 #[derive(Clone, Debug)]
 pub struct XISF {
-    source: Source,
     images: Vec<Image>,
     properties: HashMap<String, PropertyContent>,
+    metadata: Metadata,
 }
 impl XISF {
-    pub fn read_file(filename: impl AsRef<Path>, opts: &ReadOptions) -> Result<Self, ReadFileError> {
+    pub fn read_file(filename: impl AsRef<Path>, opts: &ReadOptions) -> Result<(Self, Context), ReadFileError> {
         let filename_path = filename.as_ref();
         let filename_str = filename_path.to_string_lossy().to_string();
         let _span_guard = tracing::debug_span!("read_file", filename = filename_str).entered();
@@ -251,12 +272,16 @@ impl XISF {
             return Err(report!(ReadFileError))
                 .attach_printable("Root element in XML header must be named \"xisf\"");
         } else {
-            Self::parse_root_node(root, &xpath, source, opts)
-                .change_context(ReadFileError)
+            Ok((
+                Self::parse_root_node(root, &xpath, opts)
+                    .change_context(ReadFileError)?,
+                Context { source }
+            ))
+
         }
     }
 
-    fn parse_root_node(node: RoNode, xpath: &XpathContext, source: Source, opts: &ReadOptions) -> Result<XISF, ParseNodeError> {
+    fn parse_root_node(node: RoNode, xpath: &XpathContext, opts: &ReadOptions) -> Result<XISF, ParseNodeError> {
 
         // * this is mutable because we use .remove() instead of .get()
         // that way, after we've extracted everything we recognize,
@@ -284,6 +309,7 @@ impl XISF {
 
         let mut images = vec![];
         let mut properties = HashMap::new();
+        let mut metadata = None;
         for mut child in node.get_child_nodes() {
             child = child.follow_reference(xpath).change_context(context(InvalidReference))?;
             match child.get_name().as_str() {
@@ -293,16 +319,24 @@ impl XISF {
                     if properties.insert(prop.id.clone(), prop.content).is_some() {
                         tracing::warn!("Duplicate property found with id {} -- discarding the previous one", prop.id);
                     }
+                },
+                "Metadata" => {
+                    if metadata.replace(Metadata::parse_node(child, xpath)?).is_some() {
+                        tracing::warn!("Duplicate Metadata element found -- discarding the previous one");
+                    }
                 }
                 // TODO: check if the unrecognized node has a uid tag with a reference to it somewhere before emitting a warning
                 _ => tracing::warn!("Ignoring unrecognized child node <{}>", child.get_name()),
             }
         }
+        let metadata = metadata
+            .ok_or(report(MissingChild))
+            .attach_printable("Missing Metadata element")?;
 
         Ok(XISF {
-            source,
             images,
             properties,
+            metadata,
         })
     }
 
@@ -337,10 +371,10 @@ impl XISF {
     /// Attempts to parse an XISF property with the given ID as type T
     ///
     /// To read a value and comment pair, use the pattern `let (value, comment) = properties.parse_property("ID", &xisf)?;`
-    pub fn parse_property<T: FromProperty>(&self, id: impl AsRef<str>, root: &XISF) -> Result<T, ReadPropertyError> {
+    pub fn parse_property<T: FromProperty>(&self, id: impl AsRef<str>, ctx: &Context) -> Result<T, ReadPropertyError> {
         let content = self.properties.get(id.as_ref())
             .ok_or(report!(ReadPropertyError::KeyNotFound))?;
-        T::from_property(&content, root)
+        T::from_property(&content, ctx)
             .change_context(ReadPropertyError::InvalidFormat)
     }
     /// Returns the raw content of the XISF property matching the given ID`
@@ -351,5 +385,9 @@ impl XISF {
     /// in the order they appear in file, returned as raw unparsed strings/data blocks.
     pub fn all_raw_properties(&self) -> impl Iterator<Item = (&String, &PropertyContent)> {
         self.properties.iter()
+    }
+
+    pub fn metadata(&self) -> &Metadata {
+        &self.metadata
     }
 }
