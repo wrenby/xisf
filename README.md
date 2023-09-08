@@ -18,7 +18,7 @@ Distributed Files | <details><summary>Decode (Partial)</summary>Supported scheme
 N-D Images | ✅ | [❌](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816) | [❌](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001)
 Pixel Sample Formats | Scalar, Complex | Agnostic (Raw Bytes Only) | Scalar<sup>1</sup>, Complex
 Image Metadata | <details>Attributes, XISF Properties<sup>2</sup>, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA, Resolution, Thumbnail</details> | <details>Attributes<sup>3</sup>, XISF Properties<sup>4</sup>, FITS Keywords<sup>5</sup>, ICC Profile, CFA, Thumbnail</details> | <details>Attributes<sup>6</sup>, XISF Properties, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA, Resolution, Thumbnail</details>
-Supported XISF Property Locations | `<Image>`, `<xisf>` | `<Image>` | `<Image>`, `<Metadata>`, `<xisf>`
+Supported XISF Property Locations | `<Image>`, `<Metadata>`, `<xisf>` | `<Image>` | `<Image>`, `<Metadata>`, `<xisf>`
 `<Table>` Element | ❌ | ❌ | ❌
 `<Reference>` Element | ✅ | ❌ | ❌
 Data Block Compression | <details><summary>✅<sup>7</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>✅<sup>7, 8</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>✅<sup>7</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details>
@@ -64,6 +64,6 @@ XML Digital Signature Verification | ❌ | ❌ | ❌
 - [ ] Write distributed files
 - [ ] Color space conversion?
 - [ ] XML Digital Signature verification
-- [ ] 128-bit floating point `<Property>` types <!-- `rustc_apfloat`? `fixed::F128`? latter supports bytemuck -->
+- [ ] 128-bit floating point `<Property>` types <!-- `rustc_apfloat`? `fixed::F128`? former supports math, latter supports bytemuck -->
 - [ ] async data block read functions <!-- `async_compression` -->
 - [ ] C/C++11 interface with `cbindgen`

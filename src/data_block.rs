@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{RefCell, RefMut},
     collections::HashMap,
     io::{self, Read, BufReader, Seek, Cursor, Write},
     fmt,
@@ -163,7 +163,7 @@ impl DataBlock {
     }
 
     /// Will duplicate in-memory if byte-shuffling is enabled
-    pub(crate) fn decompressed_bytes(&self, ctx: &Context) -> Result<Box<dyn Read>, ReadDataBlockError> {
+    pub(crate) fn decompressed_bytes<'a>(&self, ctx: &'a Context) -> Result<Box<dyn Read + 'a>, ReadDataBlockError> {
         self.location.decompressed_bytes(ctx, &self.compression)
     }
 }
@@ -325,7 +325,7 @@ impl Location {
     }
 
     /// Literally just a byte stream, with no knowledge of compression, byte shuffling, or checksums
-    pub(crate) fn raw_bytes(&self, ctx: &Context) -> Result<Box<dyn Read>, ReadDataBlockError> {
+    pub(crate) fn raw_bytes<'a>(&self, ctx: &'a Context) -> Result<Box<dyn Read + 'a>, ReadDataBlockError> {
         let base64 = base64_simd::STANDARD;
         match self {
             Self::Plaintext { encoding, text } => {
@@ -338,12 +338,13 @@ impl Location {
                 Ok(Box::new(Cursor::new(buf)))
             },
             Self::Attachment { position, size } => {
-                if let Source::MonolithicFile(filename) = &ctx.source {
-                    let mut file = File::open(filename)
+                if let Source::MonolithicFile(cell) = &ctx.source {
+                    let mut reader = cell.try_borrow_mut()
+                        .change_context(ReadDataBlockError)
+                        .attach_printable("Reader is in use by another data block")?;
+                    reader.seek(io::SeekFrom::Start(*position))
                         .change_context(ReadDataBlockError)?;
-                    file.seek(io::SeekFrom::Start(*position))
-                        .change_context(ReadDataBlockError)?;
-                    Ok(Box::new(BufReader::new(file).take(*size)))
+                    Ok(Box::new(reader.take_ref(*size)))
                 }  else {
                     Err(report!(ReadDataBlockError))
                         .attach_printable("Data blocks with location=\"attachment\" are only supported for monolithic files")
@@ -424,7 +425,7 @@ impl Location {
     }
 
     /// Will duplicate in-memory if byte-shuffling is enabled
-    pub(crate) fn decompressed_bytes(&self, ctx: &Context, compression: &Option<Compression>) -> Result<Box<dyn Read>, ReadDataBlockError> {
+    pub(crate) fn decompressed_bytes<'a>(&self, ctx: &'a Context, compression: &Option<Compression>) -> Result<Box<dyn Read + 'a>, ReadDataBlockError> {
         let raw = self.raw_bytes(ctx)?;
         if let Some(compression) = compression {
             let uncompressed_sizes: Vec<_> = compression.sub_blocks.0.iter().map(|tup| tup.0).collect();
@@ -497,6 +498,41 @@ impl Location {
             Self::Url { url, .. } if url.has_host() => true,
             _ => false,
         }
+    }
+}
+
+///
+trait ReadTakeRefExt<'a> {
+    type Inner;
+    fn take_ref(self, limit: u64) -> TakeRef<'a, Self::Inner>;
+}
+impl<'a, R: Read> ReadTakeRefExt<'a> for RefMut<'a, R> {
+    type Inner = R;
+    fn take_ref(self, limit: u64) -> TakeRef<'a, Self::Inner> {
+        TakeRef {
+            inner: self,
+            limit,
+        }
+    }
+}
+
+/// Identical to [`std::io::Take`], except it works on a [`RefMut`]
+struct TakeRef<'a, T> {
+    inner: RefMut<'a, T>,
+    limit: u64,
+}
+impl<'a, T: Read> Read for TakeRef<'a, T> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        // Don't call into inner reader at all at EOF because it may still block
+        if self.limit == 0 {
+            return Ok(0);
+        }
+
+        let min = std::cmp::min(buf.len() as u64, self.limit) as usize;
+        let n = self.inner.read(&mut buf[..min])?;
+        assert!(n as u64 <= self.limit, "number of read bytes exceeds limit");
+        self.limit -= n as u64;
+        Ok(n)
     }
 }
 

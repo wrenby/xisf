@@ -27,10 +27,12 @@ use libxml::{
     xpath::Context as XpathContext,
 };
 use std::{
+    cell::RefCell,
+    collections::HashMap,
     ffi::CStr,
     fs::File,
     io::{BufReader, Read},
-    path::{Path, PathBuf}, collections::HashMap,
+    path::{Path, PathBuf},
 };
 
 pub mod error;
@@ -111,13 +113,13 @@ impl WriteOptions {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub(crate) enum Source {
-    MonolithicFile(PathBuf),
+    MonolithicFile(RefCell<BufReader<File>>),
     DistributedFile(PathBuf),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct Context {
     source: Source,
 }
@@ -131,9 +133,9 @@ impl Context {
 
     #[cfg(test)]
     #[allow(dead_code)]
-    pub(crate) fn monolithic(filename: impl Into<PathBuf>) -> Self {
+    pub(crate) fn monolithic(file: BufReader<File>) -> Self {
         Self {
-            source: Source::MonolithicFile(filename.into())
+            source: Source::MonolithicFile(RefCell::new(file))
         }
     }
 }
@@ -200,7 +202,7 @@ impl XISF {
                 .read_exact(&mut header_buf)
                 .change_context(ReadFileError)
                 .attach_printable_lazy(|| format!("Failed to read {header_length}-byte XML header from file"))?;
-            source = Source::MonolithicFile(filename_path.to_owned());
+            source = Source::MonolithicFile(RefCell::new(reader));
         } else if let Some("xish") = extension.as_deref() {
             header_buf = vec![];
             reader.read_to_end(&mut header_buf)
