@@ -156,7 +156,7 @@ impl<T, L: Layout> ImageData<T, L> where T: Clone {
     /// For most cases, use [`Self::into_planar_layout()`].
     ///
     /// </div>
-    pub fn to_planar_layout(&self) -> CowImageData<T, Planar> {
+    pub fn to_planar_layout(&self) -> CowImageData<'_, T, Planar> {
         L::to_planar(self)
     }
     /// Reorganizes the pixel samples into [normal layout](PixelStorage::Normal),
@@ -174,7 +174,7 @@ impl<T, L: Layout> ImageData<T, L> where T: Clone {
     /// For most cases, use [`Self::into_normal_layout()`].
     ///
     /// </div>
-    pub fn to_normal_layout(&self) -> CowImageData<T, Normal> {
+    pub fn to_normal_layout(&self) -> CowImageData<'_, T, Normal> {
         L::to_normal(self)
     }
     /// Returns the current memory layout
@@ -271,8 +271,8 @@ pub mod memory_layout {
         type Storage: Clone + Debug;
         fn into_planar<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Planar>;
         fn into_normal<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Normal>;
-        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Planar>;
-        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Normal>;
+        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<'_, T, Planar>;
+        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<'_, T, Normal>;
         fn layout<T>(img: &ImageData<T, Self>) -> PixelStorage;
     }
 
@@ -317,12 +317,12 @@ pub mod memory_layout {
         }
 
         #[inline]
-        fn to_planar<T>(img: &ImageData<T, Self>) -> CowImageData<T, Planar> {
+        fn to_planar<T>(img: &ImageData<T, Self>) -> CowImageData<'_, T, Planar> {
             img.into()
         }
 
         #[inline]
-        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Normal> {
+        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<'_, T, Normal> {
             Self::into_normal(img.clone()).into()
         }
 
@@ -350,12 +350,12 @@ pub mod memory_layout {
         }
 
         #[inline]
-        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Planar> {
+        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<'_, T, Planar> {
             Self::into_planar(img.clone()).into()
         }
 
         #[inline]
-        fn to_normal<T>(img: &ImageData<T, Self>) -> CowImageData<T, Normal> {
+        fn to_normal<T>(img: &ImageData<T, Self>) -> CowImageData<'_, T, Normal> {
             img.into()
         }
 
@@ -389,7 +389,7 @@ pub mod memory_layout {
             }
         }
 
-        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Planar> {
+        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<'_, T, Planar> {
             CowImageData::<T, Planar> {
                 inner: match img.layout {
                     PixelStorage::Planar => (&img.inner).into(),
@@ -399,7 +399,7 @@ pub mod memory_layout {
             }
         }
 
-        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Normal> {
+        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<'_, T, Normal> {
             CowImageData::<T, Normal> {
                 inner: match img.layout {
                     PixelStorage::Planar => planar_to_normal(img.inner.clone()).into(),
@@ -441,7 +441,7 @@ pub mod memory_layout {
             }
         }
 
-        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Planar> {
+        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<'_, T, Planar> {
             CowImageData::<T, Planar> {
                 inner: match img.layout {
                     PixelStorage::Planar => (&img.inner).into(),
@@ -451,7 +451,7 @@ pub mod memory_layout {
             }
         }
 
-        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<T, Normal> {
+        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<'_, T, Normal> {
             CowImageData::<T, Normal> {
                 inner: match img.layout {
                     PixelStorage::Planar => planar_to_normal(img.inner.clone()).into(),

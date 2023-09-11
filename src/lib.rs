@@ -1,5 +1,4 @@
 //! [![Crates.io](https://img.shields.io/crates/v/xisf-rs)](https://crates.io/crates/xisf-rs)
-//! [![docs.rs](https://img.shields.io/docsrs/xisf-rs)](https://docs.rs/crate/xisf-rs/latest)
 //! ![Minimum rustc version](https://img.shields.io/badge/rustc-1.64+-lightgray.svg)
 //! ![License](https://img.shields.io/crates/l/xisf-rs.svg)
 //!
@@ -18,6 +17,7 @@
 //!
 //! </div>
 
+#![warn(missing_debug_implementations, rust_2018_idioms)]
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use error_stack::{Report, Result, ResultExt, report};
