@@ -14,7 +14,7 @@ An unaffiliated implementation of Pleiades Astrophoto's open-source Extensible I
 Language | Rust | C++ | C++
 License | MIT | GPLv3 | BSD-4-Clause-like
 Monolithic Files | Decode | Encode + Decode | Encode + Decode
-Distributed Files | <details><summary>Decode (Partial)</summary>`file`, `http`, `https`, `ftp`, see [road map](#road-map)</details> | ❌ | ❌
+Distributed Files | <details><summary>Decode (Partial)</summary>`http`, `https`, `ftp`, see [road map](#road-map)</details> | ❌ | ❌
 N-D Images | ✅ | [❌](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816) | [❌](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001)
 Pixel Sample Formats | Scalar, Complex | Agnostic (Raw Bytes Only) | Scalar<sup>1</sup>, Complex
 Image Metadata | <details>Attributes, XISF Properties<sup>2</sup>, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA, Resolution, Thumbnail</details> | <details>Attributes<sup>3</sup>, XISF Properties<sup>4</sup>, FITS Keywords<sup>5</sup>, ICC Profile, CFA, Thumbnail</details> | <details>Attributes<sup>6</sup>, XISF Properties, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA, Resolution, Thumbnail</details>
@@ -40,6 +40,7 @@ XML Digital Signature Verification | ❌ | ❌ | ❌
 - lz4 ([BSD-2-Clause](https://github.com/lz4/lz4/blob/dev/LICENSE))
 - zstd ([BSD-3-Clause](https://github.com/facebook/zstd/blob/dev/LICENSE))
 - Can be configured to use zlib ([Zlib](https://github.com/madler/zlib/blob/develop/LICENSE)) or zlib-ng ([Zlib](https://github.com/zlib-ng/zlib-ng/blob/develop/LICENSE.md))
+- Test suite requires a Docker installation when the `remote-ftp` feature is enabled
 
 # Road Map
 

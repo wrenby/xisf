@@ -5,11 +5,12 @@ use std::{
     ops::{Deref, DerefMut}
 };
 use super::PixelStorage;
+use crate::error::DowncastDynImageError as DowncastError;
 
 /// An `enum` wrapper for images of all possible [`SampleFormat`](super::SampleFormat)s
 ///
 /// If you think you know the sample format of a given image, or your program only accepts data of a certain type,
-/// you can attempt to convert a `DynImageData` into that type with `let raw: RawImageData<TYPE> = image.read_data(&xisf).try_into();`
+/// you can attempt to convert a `DynImageData` into that type with `let raw: ImageData<TYPE> = image.read_data(&ctx)?.try_into()?;`
 #[derive(Clone, Debug)]
 pub enum DynImageData {
     UInt8(ImageData<u8>),
@@ -23,13 +24,13 @@ pub enum DynImageData {
 }
 macro_rules! try_into_impl {
     ($enum:ident, $t:ty) => {
-        #[doc=concat!("Returns `Ok(RawImageData<", stringify!($t), ">)` for [`", stringify!($enum), "`](Self::", stringify!($enum), ") variants, and `Err(())` otherwise")]
+        #[doc=concat!("Returns `Ok(ImageData<", stringify!($t), ">)` for [`", stringify!($enum), "`](Self::", stringify!($enum), ") variants, and `Err(())` otherwise")]
         impl TryInto<ImageData<$t>> for DynImageData {
-            type Error = ();
+            type Error = DowncastError;
             fn try_into(self) -> Result<ImageData<$t>, Self::Error> {
                 match self {
                     Self::$enum(raw) => Ok(raw),
-                    _ => Err(()),
+                    _ => Err(DowncastError(stringify!(ident))),
                 }
             }
         }
@@ -53,7 +54,7 @@ pub(crate) trait IntoDynImageData {
 macro_rules! into_impl {
     ($enum:ident, $t:ty) => {
         impl IntoDynImageData for ArrayD<$t> {
-            /// Wraps the buffer inside of a [`DynRawImageData`]
+            /// Wraps the buffer inside of a [`DynImageData`]
             ///
             /// # Panics
             /// If the image is 0-dimensional (should be impossible when parsed from this library).
@@ -94,12 +95,13 @@ use memory_layout::*;
 ///
 /// # Example
 ///
-/// ```
-/// use xisf_rs::{XISF, image::ImageData};
-/// use ndarray::s;
-/// let (xisf, ctx) = XISF::read_file("tests/files/2ch.xisf", &Default::default()).expect("failed to read file");
-/// let img = xisf.get_image(0).read_data(&ctx).expect("failed to read image");
-/// let raw: ImageData<u16> = img.try_into().expect("not u16 samples");
+/// ```rust
+/// # use std::error::Error;
+/// # use xisf_rs::{XISF, image::ImageData};
+/// # use ndarray::s;
+/// # fn main() -> Result<(), Box<dyn Error>> {
+/// let (xisf, ctx) = XISF::read_file("tests/files/2ch.xisf", &Default::default())?;
+/// let raw: ImageData<u16> = xisf.get_image(0).read_data(&ctx)?.try_into()?;
 /// let planar = raw.to_planar_layout();
 /// let normal = raw.to_normal_layout();
 /// assert_eq!(planar.shape(), &[2, 10, 4]);
@@ -107,6 +109,8 @@ use memory_layout::*;
 /// for c in 0..2 {
 ///     assert_eq!(planar.slice(s![c, .., ..]), normal.slice(s![.., .., c]));
 /// }
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug)]
 pub struct ImageData<T, L: Layout = Raw> {

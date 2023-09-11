@@ -39,10 +39,9 @@ use error::{ParseNodeError, ParseNodeErrorKind::{self, *}, ReadFileError, ReadPr
 
 pub mod data_block;
 use data_block::{ChecksumAlgorithm, CompressionAlgorithm, CompressionLevel, Context};
-pub use data_block::DataBlock;
 
 pub mod image;
-pub use image::Image;
+use image::Image;
 
 mod reference;
 pub(crate) use reference::*;

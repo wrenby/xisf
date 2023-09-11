@@ -178,3 +178,12 @@ impl Display for ReadFileError {
     }
 }
 impl Error for ReadFileError {}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DowncastDynImageError(pub &'static str);
+impl Display for DowncastDynImageError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_fmt(format_args!("Failed to downcast DynImageData to type {}", self.0))
+    }
+}
+impl Error for DowncastDynImageError {}

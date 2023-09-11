@@ -1,14 +1,13 @@
 //! Anything related to [`DataBlock`], XISF's representation of bulk binary data
 
 use std::{
-    cell::{RefCell, RefMut},
+    cell::RefMut,
     collections::HashMap,
-    io::{self, Read, BufReader, Seek, Cursor, Write},
+    io::{self, Read, BufReader, Seek, Cursor, Write, Take},
     fmt,
     fs::File,
-    num::{NonZeroU8, NonZeroUsize},
+    num::{NonZeroU8, NonZeroU64},
     path::PathBuf,
-    rc::Rc,
     str::FromStr,
 };
 
@@ -33,6 +32,9 @@ use crate::error::{
 
 mod context;
 pub use context::*;
+
+mod sub_blocks;
+use sub_blocks::*;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataBlock {
@@ -97,13 +99,13 @@ impl DataBlock {
                         Some(Compression {
                             algorithm: attr.algorithm(),
                             sub_blocks: SubBlocks(vec![
-                                (usize::MAX, attr.uncompressed_size()) // TODO: usize::MAX here is safe, but it's a bit of a hack. marking just to verify it stays safe as I implement new features
+                                (u64::MAX, attr.uncompressed_size()) // TODO: u64::MAX here is safe, but it's a bit of a hack. marking just to verify it stays safe as I implement new features
                             ]),
                             byte_shuffling: attr.shuffle_item_size()
                         })
                     },
                     (Some(attr), _) => {
-                        let uncompressed_size: usize = sub_blocks.0.iter().map(|(_, un)| un).sum();
+                        let uncompressed_size: u64 = sub_blocks.0.iter().map(|(_, un)| un).sum();
                         if uncompressed_size != attr.uncompressed_size() {
                             return Err(report(InvalidAttr))
                                 .attach_printable("Compression sub-blocks must sum to the uncompressed size specified in the compression attribute")
@@ -328,14 +330,13 @@ impl Location {
 
     /// Literally just a byte stream, with no knowledge of compression, byte shuffling, or checksums
     pub(crate) fn raw_bytes<'a>(&self, ctx: &'a Context) -> Result<Box<dyn Read + 'a>, ReadDataBlockError> {
-        let base64 = base64_simd::STANDARD;
         match self {
             Self::Plaintext { encoding, text } => {
                 let buf = match encoding {
                     TextEncoding::Hex => hex_simd::decode_to_vec(text)
                         .change_context(ReadDataBlockError::BadTextEncoding)
                         .attach_printable("Bad hex encoding")?,
-                    TextEncoding::Base64 => base64.decode_to_vec(text)
+                    TextEncoding::Base64 => base64_simd::STANDARD.decode_to_vec(text)
                         .change_context(ReadDataBlockError::BadTextEncoding)
                         .attach_printable("Bad Base64 encoding")?,
                 };
@@ -347,24 +348,18 @@ impl Location {
                         .change_context(ReadDataBlockError::FileInUse)?;
                     reader.seek(io::SeekFrom::Start(*position))
                         .change_context(ReadDataBlockError::IoError)?;
-                    Ok(Box::new(reader.take_ref(*size)))
+                    Ok(Box::new(reader.take_ref_mut(*size)))
                 }  else {
                     Err(report!(ReadDataBlockError::UnsupportedLocation))
                         .attach_printable("Data blocks with location=\"attachment\" are only supported for monolithic files")
                 }
             },
-            #[allow(unused_variables)]
             Self::Url { url, index_id: None } => {
                 if let Source::Distributed(_) = &ctx.source {
                     if let Some(host) = url.host() {
                         ctx.ensure_trusted(host)?;
                     }
                     match url.scheme() {
-                        "file" => {
-                            let file = File::open(url.path())
-                                .change_context(ReadDataBlockError::IoError)?;
-                            Ok(Box::new(BufReader::new(file)))
-                        },
                         #[cfg(feature = "remote-http")]
                         "http" | "https" => {
                             let resp = ureq::get(url.as_str())
@@ -439,33 +434,36 @@ impl Location {
             let uncompressed_sizes: Vec<_> = compression.sub_blocks.0.iter().map(|tup| tup.0).collect();
             match compression.algorithm {
                 CompressionAlgorithm::Zlib => {
-                    let zlib = raw.sub_blocks(&uncompressed_sizes[..])
+                    let zlib = raw.multi_take(uncompressed_sizes)
                         .map(|shared| {
                             Ok(ZlibDecoder::new(shared))
-                        }).unwrap(); // safe because the map function always succeeds, and that's the only point of failure
+                        }).multi_chain()
+                        .unwrap();
 
                     Self::unshuffle(zlib, compression)
                 },
                 CompressionAlgorithm::Lz4 | CompressionAlgorithm::Lz4HC => {
-                    let lz4 = raw.sub_blocks(&uncompressed_sizes[..])
+                    let lz4 = raw.multi_take(uncompressed_sizes)
                         .map(|shared| {
                             Ok(
                                 lz4::Decoder::new(shared)
                                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
                             )
-                        }).change_context(ReadDataBlockError::IoError)
+                        }).multi_chain()
+                        .change_context(ReadDataBlockError::IoError)
                         .attach_printable("Failed to initialize Lz4 decoder")?;
 
                     Self::unshuffle(lz4, compression)
                 },
                 CompressionAlgorithm::Zstd => {
-                    let zstd = raw.sub_blocks(&uncompressed_sizes[..])
+                    let zstd = raw.multi_take(uncompressed_sizes)
                         .map(|shared| {
                             Ok(
                                 zstd::Decoder::new(shared)
                                     .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
                             )
-                        }).change_context(ReadDataBlockError::IoError)
+                        }).multi_chain()
+                        .change_context(ReadDataBlockError::IoError)
                         .attach_printable("Failed to initialize Zstd decoder")?;
 
                     Self::unshuffle(zstd, compression)
@@ -479,17 +477,18 @@ impl Location {
     // TODO: does it make any sense to unshuffle in-place reading one byte at a time?
     // would have to make a wrapper with a custom Read impl to even test it
     fn unshuffle<'a>(mut reader: impl Read + 'a, compression: &Compression) -> Result<Box<dyn Read + 'a>, ReadDataBlockError> {
+        const ONE: NonZeroU64 = unsafe { NonZeroU64::new_unchecked(1) };
         match compression.byte_shuffling {
             // byte shuffling is a nop for 1 or 0 size items
             // not sure why any implementation would encode it like this, but best to save the clone I guess
-            Some(item_size) if usize::from(item_size) > 1 => {
-                let item_size: usize = item_size.into();
+            Some(item_size) if item_size > ONE => {
+                let item_size: u64 = item_size.into();
                 let n = compression.uncompressed_size() / item_size;
                 if n * item_size != compression.uncompressed_size() {
                     return Err(report!(ReadDataBlockError::BadByteShuffleItemSize))
                 }
                 // to unshuffle, call this same code block [n, item_size] instead of [item_size, n]
-                let mut buf = Array2::<u8>::zeros([n, item_size]);
+                let mut buf = Array2::<u8>::zeros([n as usize, item_size as usize]);
                 reader.read_exact(buf.as_slice_memory_order_mut().unwrap())
                     .change_context(ReadDataBlockError::IoError)
                     .attach_printable("Failed to read bytes into temporary buffer for unshuffling")?;
@@ -499,157 +498,23 @@ impl Location {
             _ => Ok(Box::new(reader))
         }
     }
-
-    pub fn is_remote(&self) -> bool {
-        match self {
-            // TODO: check if host is localhost
-            Self::Url { url, .. } if url.has_host() => true,
-            _ => false,
-        }
-    }
 }
 
-///
-trait ReadTakeRefExt<'a> {
-    type Inner;
-    fn take_ref(self, limit: u64) -> TakeRef<'a, Self::Inner>;
-}
-impl<'a, R: Read> ReadTakeRefExt<'a> for RefMut<'a, R> {
-    type Inner = R;
-    fn take_ref(self, limit: u64) -> TakeRef<'a, Self::Inner> {
-        TakeRef {
-            inner: self,
-            limit,
-        }
-    }
-}
-
-/// Identical to [`std::io::Take`], except it works on a [`RefMut`]
-struct TakeRef<'a, T> {
-    inner: RefMut<'a, T>,
-    limit: u64,
-}
-impl<'a, T: Read> Read for TakeRef<'a, T> {
+/// A wrapper which gives [`RefMut`] a [`Read`] implementation when its inner type has one,
+/// which allows [`Read::take()`] to be called on it without dereferencing to an unwanted local lifetime
+pub(super) struct RefMutReader<'a, R>(RefMut<'a, R>);
+impl<'a, R> Read for RefMutReader<'a, R> where R: Read {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        // Don't call into inner reader at all at EOF because it may still block
-        if self.limit == 0 {
-            return Ok(0);
-        }
-
-        let min = std::cmp::min(buf.len() as u64, self.limit) as usize;
-        let n = self.inner.read(&mut buf[..min])?;
-        assert!(n as u64 <= self.limit, "number of read bytes exceeds limit");
-        self.limit -= n as u64;
-        Ok(n)
+        self.0.read(buf)
     }
 }
 
-/// Allows a reader to be split at arbitrary byte offsets, kind of like a combination of `io::Take` and `io::Chain`
-/// Used for streaming sub-block decompression
-trait ReadSubBlocksExt {
-    type Inner;
-    fn sub_blocks(self, sizes: &[usize]) -> ReadSubBlocks<Self::Inner>;
+pub(super) trait ReadTakeRefExt<'a, R> {
+    fn take_ref_mut(self, limit: u64) -> Take<RefMutReader<'a, R>>;
 }
-impl<R: Read> ReadSubBlocksExt for R {
-    type Inner = R;
-    fn sub_blocks(self, sizes: &[usize]) -> ReadSubBlocks<Self::Inner> {
-        ReadSubBlocks::new(self, sizes)
-    }
-}
-struct ReadSubBlocks<T> {
-    inner: SharedReader<T>,
-    limits: Vec<usize>,
-    chunk_index: usize,
-}
-impl<R: Read> ReadSubBlocks<R> {
-    /// Panics if `sizes` is empty
-    pub fn new(from: R, sizes: &[usize]) -> Self {
-        Self {
-            inner: SharedReader::new(from),
-            limits: sizes.to_vec(),
-            chunk_index: 0,
-        }
-    }
-
-    /// Initializes the
-    pub fn map<F, T>(self, f: F) -> io::Result<MapSubBlocks<F, R, T>>
-        where F: Fn(SharedReader<R>) -> io::Result<T>,
-        T: Read + Sized {
-        MapSubBlocks::new(self, f)
-    }
-
-    /// Number of bytes left to read before the current block ends
-    pub fn current_limit(&self) -> usize {
-        self.limits[self.chunk_index]
-    }
-
-    /// Necessary to call after a successful read to avoid corruption
-    pub fn reduce_limit(&mut self, bytes_read: usize) {
-        self.limits[self.chunk_index] -= bytes_read;
-    }
-}
-struct SharedReader<T>(Rc<RefCell<T>>);
-impl<T> Clone for SharedReader<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-impl<T> SharedReader<T> {
-    pub fn new(inner: T) -> Self {
-        Self(Rc::new(RefCell::new(inner)))
-    }
-}
-impl<R: Read> Read for SharedReader<R> {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut lock = self.0.try_borrow_mut()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        lock.read(buf)
-    }
-}
-struct MapSubBlocks<F, R, T> {
-    sub_blocks: ReadSubBlocks<R>,
-    map_func: Box<F>,
-    current: T,
-}
-impl<F, R, T> Read for MapSubBlocks<F, R, T>
-    where F: Fn(SharedReader<R>) -> io::Result<T>, R: Read, T: Read + Sized {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut total_bytes_read = 0;
-        let size = self.sub_blocks.current_limit();
-        let mut last_bytes_read = self.current.read(&mut buf[..size])?;
-        while total_bytes_read != buf.len() {
-            total_bytes_read += last_bytes_read;
-            self.sub_blocks.reduce_limit(last_bytes_read);
-            if last_bytes_read == 0 {
-                if let Some(size) = self.next_block()? {
-                    last_bytes_read = self.current.read(&mut buf[total_bytes_read..size])?;
-                } else {
-                    break;
-                }
-            }
-        }
-        Ok(total_bytes_read)
-    }
-}
-impl<F, R, T> MapSubBlocks<F, R, T>
-where F: Fn(SharedReader<R>) -> io::Result<T>, R: Read, T: Read + Sized {
-    pub fn new(sub_blocks: ReadSubBlocks<R>, f: F) -> io::Result<Self> {
-        let current = f(sub_blocks.inner.clone())?;
-        Ok(Self {
-            sub_blocks,
-            map_func: Box::new(f),
-            current,
-        })
-    }
-    /// Returns `None` if there are no blocks left
-    pub fn next_block(&mut self) -> io::Result<Option<usize>> {
-        self.sub_blocks.chunk_index += 1;
-        if self.sub_blocks.chunk_index < self.sub_blocks.limits.len() {
-            self.current = (*self.map_func)(self.sub_blocks.inner.clone())?;
-            Ok(Some(self.sub_blocks.limits[self.sub_blocks.chunk_index]))
-        } else {
-            Ok(None)
-        }
+impl<'a, R> ReadTakeRefExt<'a, R> for RefMut<'a, R> where R: Read {
+    fn take_ref_mut(self, limit: u64) -> Take<RefMutReader<'a, R>> {
+        RefMutReader(self).take(limit)
     }
 }
 
@@ -775,11 +640,11 @@ pub struct Compression {
     /// * Not exposed in public API because compressed size is not always reliable
     pub(crate) sub_blocks: SubBlocks,
     /// The `NonZeroUsize` is the item size
-    pub byte_shuffling: Option<NonZeroUsize>,
+    pub byte_shuffling: Option<NonZeroU64>,
 }
 impl Compression {
     /// Calculated from the sum of sub-block uncompressed sizes. Not zero cost!
-    pub fn uncompressed_size(&self) -> usize {
+    pub fn uncompressed_size(&self) -> u64 {
         self.sub_blocks.0.iter().map(|(_, un)| un).sum()
     }
 }
@@ -796,14 +661,14 @@ pub enum CompressionAlgorithm {
 /// Enum fields follow the pattern uncompressed-size, byte-shuffling-item-size
 #[derive(Clone, Debug, PartialEq)]
 enum CompressionAttr {
-    Zlib(usize),
-    ZlibByteShuffling(usize, NonZeroUsize),
-    Lz4(usize),
-    Lz4ByteShuffling (usize, NonZeroUsize),
-    Lz4HC(usize),
-    Lz4HCByteShuffling(usize, NonZeroUsize),
-    Zstd(usize),
-    ZstdByteShuffling(usize, NonZeroUsize),
+    Zlib(u64),
+    ZlibByteShuffling(u64, NonZeroU64),
+    Lz4(u64),
+    Lz4ByteShuffling(u64, NonZeroU64),
+    Lz4HC(u64),
+    Lz4HCByteShuffling(u64, NonZeroU64),
+    Zstd(u64),
+    ZstdByteShuffling(u64, NonZeroU64),
 }
 impl CompressionAttr {
     pub fn algorithm(&self) -> CompressionAlgorithm {
@@ -814,7 +679,7 @@ impl CompressionAttr {
             Self::Zstd(_) | Self::ZstdByteShuffling(..) => CompressionAlgorithm::Zstd,
         }
     }
-    pub fn uncompressed_size(&self) -> usize {
+    pub fn uncompressed_size(&self) -> u64 {
         match self {
             &Self::Zlib(size) => size,
             &Self::ZlibByteShuffling(size, _) => size,
@@ -826,7 +691,7 @@ impl CompressionAttr {
             &Self::ZstdByteShuffling(size, _) => size,
         }
     }
-    pub fn shuffle_item_size(&self) -> Option<NonZeroUsize> {
+    pub fn shuffle_item_size(&self) -> Option<NonZeroU64> {
         match self {
             Self::Zlib(_) | Self::Lz4(_) | Self::Lz4HC(_) | Self::Zstd(_) => None,
             &Self::ZlibByteShuffling(_, item_size) => Some(item_size),
@@ -864,45 +729,45 @@ impl FromStr for CompressionAttr {
         const CONTEXT: ParseValueError = ParseValueError("Compression");
         const UNCOMPRESSED_SIZE_ERR: &'static str = "Failed to read uncompressed size";
         const ITEM_SIZE_ERR: &'static str = "Failed to read byte shuffling item size";
-        fn parse_size(size: &str, err_msg: &'static str) -> Result<usize, ParseValueError> {
-            parse_auto_radix::<usize>(size.trim())
+        fn parse_u64(size: &str, err_msg: &'static str) -> Result<u64, ParseValueError> {
+            parse_auto_radix::<u64>(size.trim())
                 .change_context(CONTEXT)
                 .attach_printable(err_msg)
         }
         match s.split(":").collect::<Vec<_>>().as_slice() {
             &["zlib", uncompressed_size] => Ok(Self::Zlib(
-                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?
+                parse_u64(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?
             )),
             &["zlib+sh", uncompressed_size, item_size] => Ok(Self::ZlibByteShuffling(
-                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
-                NonZeroUsize::new(parse_size(item_size, ITEM_SIZE_ERR)?)
+                parse_u64(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
+                NonZeroU64::new(parse_u64(item_size, ITEM_SIZE_ERR)?)
                     .ok_or(report!(CONTEXT))
                     .attach_printable("Byte shuffling item size cannot be zero")?
             )),
             &["lz4", uncompressed_size] => Ok(Self::Lz4(
-                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?
+                parse_u64(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?
             )),
             &["lz4+sh", uncompressed_size, item_size] => Ok(Self::Lz4ByteShuffling(
-                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
-                NonZeroUsize::new(parse_size(item_size, ITEM_SIZE_ERR)?)
+                parse_u64(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
+                NonZeroU64::new(parse_u64(item_size, ITEM_SIZE_ERR)?)
                     .ok_or(report!(CONTEXT))
                     .attach_printable("Byte shuffling item size cannot be zero")?
             )),
             &["lz4hc", uncompressed_size] => Ok(Self::Lz4HC(
-                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?
+                parse_u64(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?
             )),
             &["lz4hc+sh", uncompressed_size, item_size] => Ok(Self::Lz4HCByteShuffling(
-                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
-                NonZeroUsize::new(parse_size(item_size, ITEM_SIZE_ERR)?)
+                parse_u64(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
+                NonZeroU64::new(parse_u64(item_size, ITEM_SIZE_ERR)?)
                     .ok_or(report!(CONTEXT))
                     .attach_printable("Byte shuffling item size cannot be zero")?
             )),
             &["zstd", uncompressed_size] => Ok(Self::Zstd(
-                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?
+                parse_u64(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?
             )),
             &["zstd+sh", uncompressed_size, item_size] => Ok(Self::ZstdByteShuffling(
-                parse_size(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
-                NonZeroUsize::new(parse_size(item_size, ITEM_SIZE_ERR)?)
+                parse_u64(uncompressed_size, UNCOMPRESSED_SIZE_ERR)?,
+                NonZeroU64::new(parse_u64(item_size, ITEM_SIZE_ERR)?)
                     .ok_or(report!(CONTEXT))
                     .attach_printable("Byte shuffling item size cannot be zero")?
             )),
@@ -915,7 +780,7 @@ impl FromStr for CompressionAttr {
 
 /// Tuples of (compressed size, uncompressed size)
 #[derive(Clone, PartialEq)]
-pub(crate) struct SubBlocks(pub Vec<(usize, usize)>); // TODO: NonZeroUsize, also consider if putting in the work to change this to u64 actually gets me anything
+pub(crate) struct SubBlocks(pub(crate) Vec<(u64, u64)>);
 impl fmt::Debug for SubBlocks {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
@@ -942,10 +807,10 @@ impl FromStr for SubBlocks {
         for token in s.split(":") {
             if let Some((uncompressed_size, item_size)) = token.split_once(",") {
                 sub_blocks.push((
-                    parse_auto_radix::<usize>(uncompressed_size.trim())
+                    parse_auto_radix::<u64>(uncompressed_size.trim())
                         .change_context(CONTEXT)?,
 
-                    parse_auto_radix::<usize>(item_size.trim())
+                    parse_auto_radix::<u64>(item_size.trim())
                         .change_context(CONTEXT)?,
                 ));
             } else {
@@ -983,6 +848,7 @@ mod tests {
 
     use super::*;
 
+    const GRADIENT_SIZE: u64 = 250 * 200 * 3;
     fn check_gradient(arr: &Array3<u8>) {
         for ((x, y, z), v) in arr.indexed_iter() {
             match z {
@@ -995,10 +861,61 @@ mod tests {
     }
 
     #[test]
+    fn plaintext() {
+        use hex_simd::AsciiCase;
+        let data: Vec<_> = (0u8..=255u8).collect();
+        let text = hex_simd::encode_to_string(&data, AsciiCase::Lower);
+        let hex = DataBlock {
+            location: Location::Plaintext { encoding: TextEncoding::Hex, text },
+            byte_order: ByteOrder::Little, // doesn't matter, since we're using raw_bytes
+            checksum: None,
+            compression: None,
+        };
+        let ctx = Context::distributed("tests/files/");
+        let mut reader = hex.location.raw_bytes(&ctx).unwrap();
+        let mut array = [0u8; 256];
+        reader.read_exact(&mut array).unwrap();
+        assert_eq!(array, &data[..]);
+
+        let text = base64_simd::STANDARD.encode_to_string(&data);
+        let base64 = DataBlock {
+            location: Location::Plaintext { encoding: TextEncoding::Base64, text },
+            ..hex
+        };
+        let mut reader = base64.location.raw_bytes(&ctx).unwrap();
+        let mut array = [0u8; 256];
+        reader.read_exact(&mut array).unwrap();
+        assert_eq!(array, &data[..]);
+    }
+
+    #[test]
+    fn attachment() {
+        let attachment = DataBlock {
+            location: Location::Attachment { position: 0, size: GRADIENT_SIZE },
+            byte_order: ByteOrder::Little, // doesn't matter, since we're using raw_bytes
+            checksum: None,
+            compression: None,
+        };
+
+        // not supported for distributed files
+        let ctx = Context::distributed("tests/files/");
+        let err = attachment.location.raw_bytes(&ctx).err().unwrap();
+        assert_eq!(err.current_context(), &ReadDataBlockError::UnsupportedLocation);
+
+        let file = File::open("tests/files/gradient.bin").unwrap();
+        let buf_read = BufReader::new(file);
+        let ctx = Context::monolithic(buf_read);
+        let mut reader = attachment.location.raw_bytes(&ctx).unwrap();
+        let mut array: Array3<u8> = Array3::zeros((200, 250, 3)); // 200x250 RGB
+        reader.read_exact(array.as_slice_mut().unwrap()).unwrap();
+        check_gradient(&array);
+    }
+
+    #[test]
     fn local_bin_file() {
         let local = DataBlock {
             location: Location::Path { path: "tests/files/gradient.bin".into(), index_id: None },
-            byte_order: ByteOrder::Little, // doesn't matter, since the file is a u8 array
+            byte_order: ByteOrder::Little, // doesn't matter, since we're using raw_bytes
             checksum: None,
             compression: None,
         };
@@ -1024,7 +941,7 @@ mod tests {
 
         let http = DataBlock {
             location: Location::Url { url: "https://github.com/wrenby/xisf/raw/main/tests/files/gradient.bin".try_into().unwrap(), index_id: None },
-            byte_order: ByteOrder::Little, // doesn't matter, since the file is a u8 array
+            byte_order: ByteOrder::Little, // doesn't matter, since we're using raw_bytes
             checksum: None,
             compression: None,
         };
@@ -1059,7 +976,7 @@ mod tests {
 
         let ftp = DataBlock {
             location: Location::Url { url: "ftp://computer:deactivate_iguana@localhost:2121/files/gradient.bin".try_into().unwrap(), index_id: None },
-            byte_order: ByteOrder::Little, // doesn't matter, since the file is a u8 array
+            byte_order: ByteOrder::Little, // doesn't matter, since we're using raw_bytes
             checksum: None,
             compression: None,
         };
@@ -1070,5 +987,68 @@ mod tests {
         check_gradient(&array);
 
         container.stop();
+    }
+
+    #[test]
+    fn zlib() {
+        let file = File::open("tests/files/gradient.bin.zlib").unwrap();
+        let size = file.metadata().unwrap().len();
+        let zlib = DataBlock {
+            location: Location::Attachment { position: 0, size },
+            byte_order: ByteOrder::Little, // doesn't matter, since we're using raw_bytes
+            checksum: None,
+            compression: Some(Compression {
+                algorithm: CompressionAlgorithm::Zlib,
+                sub_blocks: SubBlocks(vec![(u64::MAX, GRADIENT_SIZE)]),
+                byte_shuffling: None,
+            }),
+        };
+        let ctx = Context::monolithic(BufReader::new(file));
+        let mut reader = zlib.decompressed_bytes(&ctx).unwrap();
+        let mut array: Array3<u8> = Array3::zeros((200, 250, 3)); // 200x250 RGB
+        reader.read_exact(array.as_slice_mut().unwrap()).unwrap();
+        check_gradient(&array);
+    }
+
+    #[test]
+    fn lz4() {
+        let file = File::open("tests/files/gradient.bin.lz4").unwrap();
+        let size = file.metadata().unwrap().len();
+        let lz4 = DataBlock {
+            location: Location::Attachment { position: 0, size },
+            byte_order: ByteOrder::Little, // doesn't matter, since we're using raw_bytes
+            checksum: None,
+            compression: Some(Compression {
+                algorithm: CompressionAlgorithm::Lz4,
+                sub_blocks: SubBlocks(vec![(u64::MAX, GRADIENT_SIZE)]),
+                byte_shuffling: None,
+            }),
+        };
+        let ctx = Context::monolithic(BufReader::new(file));
+        let mut reader = lz4.decompressed_bytes(&ctx).unwrap();
+        let mut array: Array3<u8> = Array3::zeros((200, 250, 3)); // 200x250 RGB
+        reader.read_exact(array.as_slice_mut().unwrap()).unwrap();
+        check_gradient(&array);
+    }
+
+    #[test]
+    fn zstd() {
+        let file = File::open("tests/files/gradient.bin.zst").unwrap();
+        let size = file.metadata().unwrap().len();
+        let zstd = DataBlock {
+            location: Location::Attachment { position: 0, size },
+            byte_order: ByteOrder::Little, // doesn't matter, since we're using raw_bytes
+            checksum: None,
+            compression: Some(Compression {
+                algorithm: CompressionAlgorithm::Zstd,
+                sub_blocks: SubBlocks(vec![(u64::MAX, GRADIENT_SIZE)]),
+                byte_shuffling: None,
+            }),
+        };
+        let ctx = Context::monolithic(BufReader::new(file));
+        let mut reader = zstd.decompressed_bytes(&ctx).unwrap();
+        let mut array: Array3<u8> = Array3::zeros((200, 250, 3)); // 200x250 RGB
+        reader.read_exact(array.as_slice_mut().unwrap()).unwrap();
+        check_gradient(&array);
     }
 }
