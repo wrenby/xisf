@@ -18,6 +18,7 @@ license = "MIT"
 version = "0.0.3"
 edition = "2021"
 rust-version = "1.64.0"
+exclude = ["tests/**"]
 
 [package.metadata.docs.rs]
 rustc-args = ["--cfg", "docsrs"]
