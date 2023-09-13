@@ -61,13 +61,14 @@ impl FitsKeyword {
 /// POD type to store the value and comment of a FITS key
 #[derive(Clone, Debug, PartialEq)]
 pub struct FitsKeyContent {
+    /// The value of the FITS key
+    ///
+    /// FITS keys are parsed lazily, so this will always be a string, regardless of type type it should be
     pub value: String,
+    /// A comment explaining the use of or context for this key
     pub comment: String,
 }
 impl FitsKeyContent {
-    pub fn value_is_defined(&self) -> bool {
-        self.value != ""
-    }
     #[cfg(test)]
     pub(crate) fn new(value: impl Into<String>) -> Self {
         Self {
@@ -77,7 +78,9 @@ impl FitsKeyContent {
     }
 }
 
+/// Conversions between FITS keys and concrete types
 pub trait FromFitsKey: Sized {
+    /// Attempt to parse a FITS key as Self
     fn from_fits_key(content: &FitsKeyContent) -> Result<Self, ParseValueError>;
 }
 impl FromFitsKey for String {

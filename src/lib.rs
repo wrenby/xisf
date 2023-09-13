@@ -17,7 +17,7 @@
 //!
 //! </div>
 
-#![warn(missing_debug_implementations, rust_2018_idioms)]
+#![warn(missing_debug_implementations, rust_2018_idioms, missing_docs)]
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use error_stack::{Report, Result, ResultExt, report};
@@ -53,16 +53,49 @@ mod metadata;
 use metadata::Metadata;
 
 /// Flags to alter the behavior of the reader
-#[non_exhaustive]
+///
+/// # Example
+///
+/// ```rust
+/// # use xisf_rs::ReadOptions;
+/// let opts = ReadOptions::new()
+///     .import_fits_keywords(false)
+///     .clamp_to_bounds(false);
+/// ```
 #[derive(Clone, Debug)]
 pub struct ReadOptions {
+    pub(crate) import_fits_keywords: bool,
+    pub(crate) fits_keywords_as_properties: bool,
+    pub(crate) clamp_to_bounds: bool,
+}
+impl ReadOptions {
+    /// Alias for [`Default::default()`]
+    pub fn new() -> Self {
+        Default::default()
+    }
     /// Read FITSKeyword headers from the XML header
-    pub import_fits_keywords: bool,
+    pub fn import_fits_keywords(&mut self, import: bool) -> &mut Self {
+        self.import_fits_keywords = import;
+        self
+    }
     /// Import FITSKeyword headers as XISF &lt;Property&gt; tags with the prefix FITS:
-    pub fits_keywords_as_properties: bool,
-    /// Clamp all pixel samples to the range specified in the bounds attribute.
+    ///
+    /// Has no effect if [`Self::import_fits_keywords()`] is false
+    ///
+    /// <div class="warning">Not currently respected</div>
+    pub fn fits_keywords_as_properties(&mut self, convert: bool) -> &mut Self {
+        self.fits_keywords_as_properties = convert;
+        self
+    }
+    /// Clamp all pixel samples to the range specified in the bounds attribute
+    ///
     /// For floating-point images: NaNs, infinities, and negative zeros are replaced with the lower bound
-    pub clamp_to_bounds: bool,
+    ///
+    /// <div class="warning">Not currently respected</div>
+    pub fn clamp_to_bounds(&mut self, clamp: bool) -> &mut Self {
+        self.clamp_to_bounds = clamp;
+        self
+    }
 }
 impl Default for ReadOptions {
     fn default() -> Self {
@@ -74,31 +107,43 @@ impl Default for ReadOptions {
     }
 }
 
+
 /// Flags to alter the behavior of the writer
-#[non_exhaustive]
+///
+/// # Example
+///
+/// ```rust
+/// # use xisf_rs::WriteOptions;
+/// # use xisf_rs::data_block::{ChecksumAlgorithm, CompressionAlgorithm, CompressionLevel};
+/// let opts = WriteOptions::new("My Awesome Astronomy Program")
+///     .checksum_algorithm(Some(ChecksumAlgorithm::Sha3_512))
+///     .compression_algorithm(Some((CompressionAlgorithm::Zlib, CompressionLevel::Auto)));
+/// ```
 #[derive(Clone, Debug)]
 pub struct WriteOptions {
     /// Name of the application using this library
-    pub creator_application: String,
+    pub(crate) creator_application: String,
     /// Write FITS headers as FITSKeyword elements in the XML header
-    pub export_fits_keywords: bool,
+    pub(crate) export_fits_keywords: bool,
     /// Algorithm used for XISF data block checksum calculations
-    pub checksum_alg: Option<ChecksumAlgorithm>,
+    pub(crate) checksum_alg: Option<ChecksumAlgorithm>,
     /// Algorithm used to compress XISF data blocks
-    pub compression_alg: Option<(CompressionAlgorithm, CompressionLevel)>,
+    pub(crate) compression_alg: Option<(CompressionAlgorithm, CompressionLevel)>,
     /// Lower bound for floating-point pixel samples
-    pub fp_lower_bound: f64,
+    pub(crate) fp_lower_bound: f64,
     /// Upper bound for floating-point pixel samples
-    pub fp_upper_bound: f64,
+    pub(crate) fp_upper_bound: f64,
     /// Data blocks are allocated with block sizes of integer multiples of this value, in bytes
-    pub block_alignment_size: u16,
+    pub(crate) block_alignment_size: u16,
     /// Max size (in bytes) that an XISF data block can be before it can no longer be inlined/embedded.
     /// Recommended value: 3/4 the size of block_alignment_size (or a multiple of it), since base64 takes 4 chars to encode 3 bytes.
     /// That is, a maximum-size inline data block can be base64-encoded into a buffer the same size as the block alignment size
-    pub max_inline_block_size: u16,
+    pub(crate) max_inline_block_size: u16,
 }
 impl WriteOptions {
-    pub fn default_with_app_name(app_name: impl Into<String>) -> Self {
+    /// Creates a new `WriteOptions` with the given app name,
+    /// and all other options set to their default values
+    pub fn new(app_name: impl Into<String>) -> Self {
         Self {
             creator_application: app_name.into(),
             export_fits_keywords: true,
@@ -109,6 +154,49 @@ impl WriteOptions {
             block_alignment_size: 4096,
             max_inline_block_size: 3072, // a block of 3072 bytes takes 4096 bytes in base64 encoding
         }
+    }
+
+    /// Name of the application using this library
+    pub fn app_name(&mut self, name: String) -> &mut Self {
+        self.creator_application = name;
+        self
+    }
+    /// Write FITS headers as FITSKeyword elements in the XML header
+    pub fn export_fits_keywords(&mut self, export: bool) -> &mut Self {
+        self.export_fits_keywords = export;
+        self
+    }
+    /// Algorithm used for XISF data block checksum calculations
+    pub fn checksum_algorithm(&mut self, alg: Option<ChecksumAlgorithm>) -> &mut Self {
+        self.checksum_alg = alg;
+        self
+    }
+    /// Algorithm used to compress XISF data blocks
+    pub fn compression_algorithm(&mut self, alg: Option<(CompressionAlgorithm, CompressionLevel)>) -> &mut Self {
+        self.compression_alg = alg;
+        self
+    }
+    /// Lower bound for floating-point pixel samples
+    pub fn fp_lower_bound(&mut self, low: f64) -> &mut Self {
+        self.fp_lower_bound = low;
+        self
+    }
+    /// Upper bound for floating-point pixel samples
+    pub fn fp_upper_bound(&mut self, high: f64) -> &mut Self {
+        self.fp_upper_bound = high;
+        self
+    }
+    /// Data blocks are allocated with block sizes of integer multiples of this value, in bytes
+    pub fn block_alignment_size(&mut self, size: u16) -> &mut Self {
+        self.block_alignment_size = size;
+        self
+    }
+    /// Max size (in bytes) that an XISF data block can be before it can no longer be inlined/embedded.
+    /// Recommended value: 3/4 the size of block_alignment_size (or a multiple of it), since base64 takes 4 chars to encode 3 bytes.
+    /// That is, a maximum-size inline data block can be base64-encoded into a buffer the same size as the block alignment size
+    pub fn max_inline_block_size(&mut self, size: u16) -> &mut Self {
+        self.max_inline_block_size = size;
+        self
     }
 }
 
@@ -130,10 +218,10 @@ pub struct XISF {
 }
 impl XISF {
     /// Opens a file from disk
-    pub fn read_file(filename: impl AsRef<Path>, opts: &ReadOptions) -> Result<(Self, Context), ReadFileError> {
+    pub fn open(filename: impl AsRef<Path>, opts: &ReadOptions) -> Result<(Self, Context), ReadFileError> {
         let filename_path = filename.as_ref();
         let filename_str = filename_path.to_string_lossy().to_string();
-        let _span_guard = tracing::debug_span!("read_file", filename = filename_str).entered();
+        let _span_guard = tracing::debug_span!("open", filename = filename_str).entered();
 
         let f = File::open(filename_path)
             .change_context(ReadFileError)
@@ -337,7 +425,7 @@ impl XISF {
     ///
     /// # Panics
     /// If `i` is outside the range `0..num_images()`
-    pub fn get_image(&self, i: usize) -> &Image {
+    pub fn image(&self, i: usize) -> &Image {
         &self.images[i]
     }
 
@@ -351,7 +439,7 @@ impl XISF {
     /// To read a value and comment pair, use the pattern `let (value, comment) = properties.parse_property("ID", &xisf)?;`
     pub fn parse_property<T: FromProperty>(&self, id: impl AsRef<str>, ctx: &Context) -> Result<T, ReadPropertyError> {
         let content = self.properties.get(id.as_ref())
-            .ok_or(report!(ReadPropertyError::KeyNotFound))?;
+            .ok_or(report!(ReadPropertyError::NotFound))?;
         T::from_property(&content, ctx)
             .change_context(ReadPropertyError::InvalidFormat)
     }
@@ -375,7 +463,7 @@ impl XISF {
     /// To read a value and comment pair, use the pattern `let (value, comment) = properties.parse_property("ID", &xisf)?;`
     pub fn parse_metadata<T: FromProperty>(&self, id: impl AsRef<str>, ctx: &Context) -> Result<T, ReadPropertyError> {
         let content = self.metadata.get(id.as_ref())
-            .ok_or(report!(ReadPropertyError::KeyNotFound))?;
+            .ok_or(report!(ReadPropertyError::NotFound))?;
         T::from_property(&content, ctx)
             .change_context(ReadPropertyError::InvalidFormat)
     }

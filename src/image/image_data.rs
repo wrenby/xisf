@@ -4,23 +4,48 @@ use std::{
     marker::PhantomData,
     ops::{Deref, DerefMut}
 };
-use super::PixelStorage;
+use super::{PixelStorage, SampleFormat};
 use crate::error::DowncastDynImageError as DowncastError;
 
 /// An `enum` wrapper for images of all possible [`SampleFormat`](super::SampleFormat)s
 ///
 /// If you think you know the sample format of a given image, or your program only accepts data of a certain type,
 /// you can attempt to convert a `DynImageData` into that type with `let raw: ImageData<TYPE> = image.read_data(&ctx)?.try_into()?;`
+///
+/// See also [`SampleFormat`]
 #[derive(Clone, Debug)]
 pub enum DynImageData {
+    /// Pixel samples are scalar `u8`s
     UInt8(ImageData<u8>),
+    /// Pixel samples are scalar `u16`s
     UInt16(ImageData<u16>),
+    /// Pixel samples are scalar `u32`s
     UInt32(ImageData<u32>),
+    /// Pixel samples are scalar `u64`s
     UInt64(ImageData<u64>),
+    /// Pixel samples are scalar `f32`s
     Float32(ImageData<f32>),
+    /// Pixel samples are scalar `f64`s
     Float64(ImageData<f64>),
+    /// Pixel samples are complex with `f32` parts
     Complex32(ImageData<Complex<f32>>),
+    /// Pixel samples are complex with `f64` parts
     Complex64(ImageData<Complex<f64>>),
+}
+impl DynImageData {
+    /// Returns the sample format of this enum variant
+    pub fn sample_format(&self) -> SampleFormat {
+        match self {
+            DynImageData::UInt8(_) => SampleFormat::UInt8,
+            DynImageData::UInt16(_) => SampleFormat::UInt16,
+            DynImageData::UInt32(_) => SampleFormat::UInt32,
+            DynImageData::UInt64(_) => SampleFormat::UInt64,
+            DynImageData::Float32(_) => SampleFormat::Float32,
+            DynImageData::Float64(_) => SampleFormat::Float64,
+            DynImageData::Complex32(_) => SampleFormat::Complex32,
+            DynImageData::Complex64(_) => SampleFormat::Complex64,
+        }
+    }
 }
 macro_rules! try_into_impl {
     ($enum:ident, $t:ty) => {
@@ -100,8 +125,8 @@ use memory_layout::*;
 /// # use xisf_rs::{XISF, image::ImageData};
 /// # use ndarray::s;
 /// # fn main() -> Result<(), Box<dyn Error>> {
-/// let (xisf, ctx) = XISF::read_file("tests/files/2ch.xisf", &Default::default())?;
-/// let raw: ImageData<u16> = xisf.get_image(0).read_data(&ctx)?.try_into()?;
+/// let (xisf, ctx) = XISF::open("tests/files/2ch.xisf", &Default::default())?;
+/// let raw: ImageData<u16> = xisf.image(0).read_data(&ctx)?.try_into()?;
 /// let planar = raw.to_planar_layout();
 /// let normal = raw.to_normal_layout();
 /// assert_eq!(planar.shape(), &[2, 10, 4]);
@@ -128,20 +153,20 @@ impl<T, L: Layout> Clone for ImageData<T, L> where T: Clone {
     }
 }
 impl<T, L: Layout> ImageData<T, L> where T: Clone {
-    /// Reorganizes the pixel samples into [planar layout](PixelStorage::Planar), consuming `self`
+    /// Reorganizes the pixel samples into [planar layout](Planar), consuming `self`
     ///
     /// - If the current memory layout is normal, enough memory is needed to temporarily duplicate the image
     /// - If the current memory layout is already planar, this is a no-op.
     pub fn into_planar_layout(self) -> ImageData<T, Planar> {
         L::into_planar(self)
     }
-    /// Reorganizes the pixel samples into [normal layout](PixelStorage::Normal), consuming `self`
+    /// Reorganizes the pixel samples into [normal layout](Normal), consuming `self`
     ///
     /// If the current memory layout is already normal, this is a no-op.
     pub fn into_normal_layout(self) -> ImageData<T, Normal> {
         L::into_normal(self)
     }
-    /// Reorganizes the pixel samples into [planar layout](PixelStorage::Planar),
+    /// Reorganizes the pixel samples into [planar layout](Planar),
     /// returning a copy-on-write (Cow) view of the underlying memory buffer
     ///
     /// - If the memory layout is already planar, the underlying memory buffer of the output
@@ -159,7 +184,7 @@ impl<T, L: Layout> ImageData<T, L> where T: Clone {
     pub fn to_planar_layout(&self) -> CowImageData<'_, T, Planar> {
         L::to_planar(self)
     }
-    /// Reorganizes the pixel samples into [normal layout](PixelStorage::Normal),
+    /// Reorganizes the pixel samples into [normal layout](Normal),
     /// returning a copy-on-write (Cow) view of the underlying memory buffer
     ///
     /// - If the memory layout is already normal, the underlying memory buffer of the output
@@ -194,7 +219,7 @@ impl<T, L: Layout> ImageData<T, L> where T: Clone {
     }
 }
 impl<T> ImageData<T, Raw> {
-    pub fn new(buf: ArrayD<T>, layout: PixelStorage) -> Self {
+    fn new(buf: ArrayD<T>, layout: PixelStorage) -> Self {
         Self {
             inner: buf,
             layout,
@@ -221,12 +246,14 @@ impl<T, L: Known> DerefMut for ImageData<T, L> {
     }
 }
 
+/// [`ImageData<T, L>`] but with a copy-on-write internal array
 #[derive(Clone, Debug)]
 pub struct CowImageData<'a, T, L: Layout> {
     inner: CowArray<'a, T, IxDyn>,
     layout: L::Storage,
 }
 impl<'a, T, L: Layout> CowImageData<'a, T, L> where T: Clone {
+    /// Convert this to an owned representation ([`ImageData<T, L>`])
     pub fn to_owned(&self) -> ImageData<T, L> {
         ImageData::<T, L> {
             inner: self.inner.to_owned(),
@@ -267,13 +294,18 @@ impl<'a, T, L: Known> DerefMut for CowImageData<'a, T, L> {
 pub mod memory_layout {
     use super::*;
     use std::fmt::Debug;
-    pub trait Layout: Sized {
-        type Storage: Clone + Debug;
-        fn into_planar<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Planar>;
-        fn into_normal<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Normal>;
-        fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<'_, T, Planar>;
-        fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<'_, T, Normal>;
-        fn layout<T>(img: &ImageData<T, Self>) -> PixelStorage;
+    pub(crate) use sealed::Layout;
+
+    mod sealed {
+        use super::*;
+        pub trait Layout: Sized {
+            type Storage: Clone + Debug;
+            fn into_planar<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Planar>;
+            fn into_normal<T: Clone>(img: ImageData<T, Self>) -> ImageData<T, Normal>;
+            fn to_planar<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<'_, T, Planar>;
+            fn to_normal<T: Clone>(img: &ImageData<T, Self>) -> CowImageData<'_, T, Normal>;
+            fn layout<T>(img: &ImageData<T, Self>) -> PixelStorage;
+        }
     }
 
     // TODO: investigate alternatives with lower memory overhead
@@ -299,6 +331,19 @@ pub mod memory_layout {
             .to_owned()
     }
 
+    /// The image is laid out with each channel having all of its values for each pixel stored sequentially
+    ///
+    /// For example, consider a 2D RGB image.
+    /// Since XISF images are stored in row-major order, this means the pixels are laid out in the order
+    /// `(0,0), (0,1), (1,0), (1,1)`. For a normal-layout image, the samples would in the following order:
+    /// `(0,0,R), (0,1,R), (1,0,R), (1,1,R), (0,0,G), (0,1,G), (1,0,G), (1,1,G), (0,0,B), (0,1,B), (1,0,B), (1,1,B)`.
+    ///  See also [`PixelStorage`]; contrast with [`Normal`].
+    /// See [the spec](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#__XISF_Data_Objects_:_XISF_Image_:_Pixel_Storage_Models_:_Planar_Pixel_Storage_Model__)
+    /// for more information.
+    ///
+    /// <div style="text-align: center; background-color: lightgray; padding: 1rem;">
+    /// <img src="https://pixinsight.com/doc/docs/XISF-1.0-spec/images/planar-pixel-storage-model.svg" width="50%" />
+    /// </div>
     #[derive(Clone, Debug)]
     pub struct Planar;
     impl Layout for Planar {
@@ -332,6 +377,19 @@ pub mod memory_layout {
         }
     }
 
+    /// The image is laid out with each pixel having all of its values for each channel stored sequentially
+    ///
+    /// For example, consider a 2D RGB image.
+    /// Since XISF images are stored in row-major order, this means the pixels are laid out in the order
+    /// `(0,0), (0,1), (1,0), (1,1)`. For a normal-layout image, the samples would in the following order:
+    /// `(0,0,R), (0,0,G), (0,0,B), (0,1,R), (0,1,G), (0,1,B), (1,0,R), (1,0,G), (1,0,B), (1,1,R), (1,1,G), (1,1,B)`.
+    ///  See also [`PixelStorage`]; contrast with [`Planar`].
+    /// See [the spec](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#__XISF_Data_Objects_:_XISF_Image_:_Pixel_Storage_Models_:_Normal_Pixel_Storage_Model__)
+    /// for more information.
+    ///
+    /// <div style="text-align: center; background-color: lightgray; padding: 1rem;">
+    /// <img src="https://pixinsight.com/doc/docs/XISF-1.0-spec/images/normal-pixel-storage-model.svg" width="50%" />
+    /// </div>
     #[derive(Clone, Debug)]
     pub struct Normal;
     impl Layout for Normal {
@@ -365,6 +423,11 @@ pub mod memory_layout {
         }
     }
 
+    /// The pixels are laid out however they were in the file
+    ///
+    /// Does not provide direct access to the underlying buffer.
+    /// To read the image, either convert it to planar/normal layout
+    /// or accept it as-is with [`ImageData<T, Raw>::accept_current_layout()`]
     #[derive(Clone, Debug)]
     pub struct Raw;
     impl Layout for Raw {

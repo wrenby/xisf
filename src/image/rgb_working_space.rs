@@ -14,6 +14,7 @@ const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
 
 /// Describes the location of the red, green, and blue primary colors in the CIE 1931 chromaticity diagram using the
 /// [xyY coordinate system](https://en.wikipedia.org/wiki/CIE_1931_color_space#CIE_xy_chromaticity_diagram_and_the_CIE_xyY_color_space)
+///
 /// <div class="warning">XISF color spaces are specified relative to D50 white, commonly used for print media,
 /// not the D65 white more commonly used for digital media.</div>
 #[derive(Clone, Debug)]
@@ -138,27 +139,26 @@ impl RGBWorkingSpace {
 }
 
 /// A transformation from nonlinear color space into linear color space
-///
-/// For an sRGB color space, applies a specific piecewise function.
-/// For a non-sRGB color space, raises the sample to the power of gamma.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Linearization {
+    /// For a non-sRGB color space, raises the sample to the power of gamma
     Gamma(f32),
+    /// For an sRGB color space, applies a specific piecewise function
     Srgb,
 }
 impl Linearization {
-    pub fn apply(&self, x: f32) -> f32 {
-        match self {
-            &Self::Gamma(gamma) => x.powf(gamma),
-            Self::Srgb => {
-                if x <= 0.04045 {
-                    x / 12.92
-                } else {
-                    ((x + 0.055) / 1.055).powf(2.4)
-                }
-            }
-        }
-    }
+    // pub(crate) fn apply(&self, x: f32) -> f32 {
+    //     match self {
+    //         &Self::Gamma(gamma) => x.powf(gamma),
+    //         Self::Srgb => {
+    //             if x <= 0.04045 {
+    //                 x / 12.92
+    //             } else {
+    //                 ((x + 0.055) / 1.055).powf(2.4)
+    //             }
+    //         }
+    //     }
+    // }
 }
 
 #[cfg(test)]

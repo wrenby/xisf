@@ -12,7 +12,9 @@ const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
     ParseNodeError::new("ColorFilterArray", kind)
 }
 
-/// Color filter array
+/// A [color filter array](https://en.wikipedia.org/wiki/Color_filter_array), a repeating pattern of microscopic filters in front of of a sensor's pixels
+///
+/// Used to assign color data to raw images. Supported filters: undefined, red, green, blue, white/panchromatic, cyan, magenta, yellow
 #[derive(Clone, Debug)]
 pub struct CFA {
     name: Option<String>,
@@ -77,14 +79,23 @@ impl CFA {
         })
     }
 
+    /// A common name for this pattern, e.g. "GRBG Bayer Filter" or "Fujifilm X-Trans Filter"
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
     }
 
+    /// The width of this pattern
+    ///
+    /// Recall that XISF images are stored in row-major order,
+    /// so this should be tiled along dimension 1 (zero-indexed)
     pub fn width(&self) -> usize {
         self.matrix.len_of(Axis(1))
     }
 
+    /// The height of this pattern
+    ///
+    /// Recall that XISF images are stored in row-major order,
+    /// so this should be tiled along dimension 0 (zero-indexed)
     pub fn height(&self) -> usize {
         self.matrix.len_of(Axis(0))
     }
@@ -99,6 +110,7 @@ impl ToString for CFA {
 mod tests {
     use super::*;
     use libxml::parser::Parser;
+
     #[test]
     fn parse_node() {
         // examples from the XISF spec

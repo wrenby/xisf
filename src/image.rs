@@ -202,7 +202,7 @@ impl ImageBase {
     /// To read a value and comment pair, use the pattern `let (value, comment) = properties.parse_property("ID", &xisf)?;`
     pub fn parse_property<T: FromProperty>(&self, id: impl AsRef<str>, ctx: &Context) -> Result<T, ReadPropertyError> {
         let content = self.properties.get(id.as_ref())
-            .ok_or(report!(ReadPropertyError::KeyNotFound))?;
+            .ok_or(report!(ReadPropertyError::NotFound))?;
         T::from_property(&content, ctx)
             .change_context(ReadPropertyError::InvalidFormat)
     }
@@ -225,7 +225,7 @@ impl ImageBase {
     /// If there is more than one key present with the given name, only the first one is returned.
     pub fn parse_fits_key<T: FromFitsKey>(&self, name: impl AsRef<str>) -> Result<T, ReadFitsKeyError> {
         let content = self.fits_header.get(name.as_ref())
-            .ok_or(report!(ReadFitsKeyError::KeyNotFound))?;
+            .ok_or(report!(ReadFitsKeyError::NotFound))?;
         T::from_fits_key(content)
             .change_context(ReadFitsKeyError::InvalidFormat)
     }
@@ -548,24 +548,37 @@ impl Image {
         parse_image::<Self>(node, xpath, opts)
     }
 
+    /// Returns the color filter array, if one exists
     pub fn cfa(&self) -> Option<&CFA> {
         self.color_filter_array.as_ref()
     }
 
+    /// Returns the thumbnail, if one exists
     pub fn thumbnail(&self) -> Option<&Thumbnail> {
         self.thumbnail.as_ref()
     }
 }
 
+/// Describes what kind of data makes up a given image
+///
+/// See also [`DynImageData`]
 #[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum SampleFormat {
+    /// Pixel samples are scalar `u8`s
     UInt8,
+    /// Pixel samples are scalar `u16`s
     UInt16,
+    /// Pixel samples are scalar `u32`s
     UInt32,
+    /// Pixel samples are scalar `u64`s
     UInt64,
+    /// Pixel samples are scalar `f32`s
     Float32,
+    /// Pixel samples are scalar `f64`s
     Float64,
+    /// Pixel samples are complex with `f32` parts
     Complex32,
+    /// Pixel samples are complex with `f64` parts
     Complex64,
 }
 impl SampleFormat {
@@ -577,31 +590,56 @@ impl SampleFormat {
     }
 }
 
-/// Sets the minimum and maximum value of a channel sample
+/// Sets the minimum and maximum value of a pixel sample
 // TODO: I think this is just used for display purposes and doesn't actually clamp input? should add that to the doc if so
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SampleBounds {
+    /// The lower bound
     pub low: f64,
+    /// The upper bound
     pub high: f64,
 }
 
 /// Describes whether this is a light frame, dark frame, flat frame, bias frame, etc
 #[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum ImageType {
+    /// A bias frame is an extremely short exposure taken with the sensor covered,
+    /// taken to counteract the sensor's readout noise.
     Bias,
+    /// A dark frame is an exposure taken with the sensor covered, with the same length and at the same temperature as the light frame it's calibrating.
+    /// Dark frames are taken to counteract the sensor's thermal noise and hot/cold pixels.
     Dark,
+    /// A flat frame is an exposure taken with the main optical element completely illuminated by an even light source,
+    /// taken to counteract the optical system's dust and vignetting.
     Flat,
+    /// A light frame is an exposure of the actual target
     Light,
+    /// An integration (AKA stack) of two or more [`Bias`](Self::Bias) frames
     MasterBias,
+    /// An integration (AKA stack) of two or more [`Dark`](Self::Dark) frames
     MasterDark,
+    /// An integration (AKA stack) of two or more [`Flat`](Self::Flat) frames
     MasterFlat,
+    /// An integration (AKA stack) of two or more [`Light`](Self::Light) frames
     MasterLight,
+    /// an integer or floating point real image where nonzero pixel sample values represent invalid or defective pixels.
+    /// Defective pixels are typically ignored or replaced with plausible statistical estimates, such as robust averages of neighbor pixels.
     DefectMap,
     RejectionMapHigh,
     RejectionMapLow,
+    /// An integer image where a pixel sample value is nonzero if and only if the corresponding pixel sample of a given image
+    /// has been rejected in an integration process. A value of zero is Low and high binary rejection maps are to be interpreted as in the preceding paragraph for normal rejection maps.
+    /// Binary rejection maps should be generated as 8-bit unsigned integer images.
     BinaryRejectionMapHigh,
     BinaryRejectionMapLow,
+    /// Integer or floating point real images where each pixel sample value is proportional to the slope of a straight line
+    /// fitted to a set of integrated pixels at the corresponding pixel coordinates.
+    /// A slope map value equal to the lower bound of the representable range corresponds to a
+    /// horizontal line (or a slope of zero degrees), while the upper bound represents a vertical line (infinite slope).
     SlopeMap,
+    /// Integer or floating point real images where each pixel sample value is proportional to a statistical weight assigned
+    /// at the corresponding pixel coordinates. Statistical weights represented by weight maps are typically generated by image calibration,
+    /// registration and integration processes, but can be produced by any task performing per-pixel evaluations or comparisons.
     WeightMap,
 }
 
@@ -620,15 +658,18 @@ pub enum PixelStorage {
     Normal,
 }
 
-#[non_exhaustive]
 #[derive(Clone, Copy, Debug, Display, Default, EnumString, EnumVariantNames, PartialEq)]
 pub enum ColorSpace {
     #[default]
+    /// A one-channel grayscale image
     Gray,
+    /// A three-channel RGB image
     RGB,
+    /// A three-channel CIE L\*a\*b\* image
     CIELab,
 }
 impl ColorSpace {
+    /// Returns the number of channels that it takes to store a complete pixel in this color space
     pub fn num_channels(&self) -> usize {
         match self {
             Self::Gray => 1,

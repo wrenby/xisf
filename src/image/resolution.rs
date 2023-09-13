@@ -10,10 +10,38 @@ const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
     ParseNodeError::new("Resolution", kind)
 }
 
+/// The resolution of the image, in pixels per unit
+///
+/// Although it would be unusual for horizontal and vertical resolutions to differ,
+/// as this would result in a stretched image for most media, they are specified separately.
 #[derive(Clone, Debug)]
 pub enum Resolution {
-    Inch { horizontal: f32, vertical: f32 },
-    Cm { horizontal: f32, vertical: f32 },
+    /// Resolution is measured in pixels per inch
+    Inch {
+        /// Horizontal resolution, in pixels per inch
+        ///
+        /// Recall that XISF images are stored in row-major order,
+        /// so this should be applied to dimension 1 (zero-indexed)
+        horizontal: f32,
+        /// Vertical resolution, in pixels per inch
+        ///
+        /// Recall that XISF images are stored in row-major order,
+        /// so this should be applied to dimension 0 (zero-indexed)
+        vertical: f32,
+    },
+    /// Resolution is measured in pixels per centimeter
+    Cm {
+        /// Horizontal resolution, in pixels per centimeter
+        ///
+        /// Recall that XISF images are stored in row-major order,
+        /// so this should be applied to dimension 1 (zero-indexed)
+        horizontal: f32,
+        /// Vertical resolution, in pixels per centimeter
+        ///
+        /// Recall that XISF images are stored in row-major order,
+        /// so this should be applied to dimension 0 (zero-indexed)
+        vertical: f32,
+    },
 }
 impl Resolution {
     pub(crate) fn parse_node(node: RoNode) -> Result<Self, ParseNodeError> {

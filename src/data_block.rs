@@ -175,23 +175,35 @@ impl DataBlock {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Location {
     /// Inline or embedded: data is encoded in a child text or &lt;Data&gt; node
-    Plaintext {
+    Text {
+        ///
         encoding: TextEncoding,
-        text: String, // stripped of all whitespace
+        /// The text itself, stripped of all whitespace
+        text: String,
     },
     /// Data is elsewhere in the file (only supported for monolithic XISF files)
     Attachment {
+        /// The byte offset of this data block, relative to the start of the file
         position: u64,
+        /// The length in bytes of this data block
         size: u64,
     },
     /// Data is stored remotely (only supported for distributed XISF files)
     Url {
+        /// The URL where a file storing this data block can be found
         url: Url,
+        /// If `Some`, indicates that the file at the given URL is an [XISB file](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#__XISF_Structure_:_XISF_Data_Blocks_File__),
+        /// where the contained `u64` is the unique ID of the block index element pointing to the desired section of the XISB file.
+        /// If `None`, indicates that the entire file is one big data block.
         index_id: Option<u64>,
     },
     /// Data is store elsewhere on the filesystem (only supported for distributed XISF files)
     Path {
+        /// The path where a file storing this data block can be found
         path: PathBuf,
+        /// If `Some`, indicates that the file at the given path is an [XISB file](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#__XISF_Structure_:_XISF_Data_Blocks_File__),
+        /// where the contained `u64` is the unique ID of the block index element pointing to the desired section of the XISB file.
+        /// If `None`, indicates that the entire file is one big data block.
         index_id: Option<u64>,
     }
 }
@@ -222,7 +234,7 @@ impl Location {
                             let mut text = text.get_content();
                             text.retain(|c| !c.is_whitespace());
                             Ok(Some(
-                                Self::Plaintext {
+                                Self::Text {
                                     encoding,
                                     text,
                                 }
@@ -251,7 +263,7 @@ impl Location {
                                         let mut text = text.get_content();
                                         text.retain(|c| !c.is_whitespace());
                                         Ok(Some(
-                                            Self::Plaintext {
+                                            Self::Text {
                                                 encoding,
                                                 text,
                                             }
@@ -331,7 +343,7 @@ impl Location {
     /// Literally just a byte stream, with no knowledge of compression, byte shuffling, or checksums
     pub(crate) fn raw_bytes<'a>(&self, ctx: &'a Context) -> Result<Box<dyn Read + 'a>, ReadDataBlockError> {
         match self {
-            Self::Plaintext { encoding, text } => {
+            Self::Text { encoding, text } => {
                 let buf = match encoding {
                     TextEncoding::Hex => hex_simd::decode_to_vec(text)
                         .change_context(ReadDataBlockError::BadTextEncoding)
@@ -518,19 +530,25 @@ impl<'a, R> ReadTakeRefExt<'a, R> for RefMut<'a, R> where R: Read {
     }
 }
 
+/// Describes the encoding of an [inline or embedded](Location::Plaintext) data block
 #[derive(Clone, Copy, Debug, Default, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum TextEncoding {
+    /// [Base 64 encoding](https://datatracker.ietf.org/doc/html/rfc4648#section-4)
     #[default]
     #[strum(serialize = "base64")]
     Base64,
+    /// [Hexadecimal (base 16) encoding](https://datatracker.ietf.org/doc/html/rfc4648#section-8), must be serialized with a-f in lowercase
     #[strum(serialize = "hex")]
-    Hex, // hexadecimal (base 16), must be serialized with a-f in lowercase
+    Hex,
 }
 
+/// The byte order (AKA endianness) of this data block
 #[derive(Clone, Copy, Debug, Default, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum ByteOrder {
+    /// Big endian (most significant bytes are stored first)
     #[strum(serialize = "big")]
     Big,
+    /// Little endian (least significant bytes are stored first)
     #[default]
     #[strum(serialize = "little")]
     Little,
@@ -866,7 +884,7 @@ mod tests {
         let data: Vec<_> = (0u8..=255u8).collect();
         let text = hex_simd::encode_to_string(&data, AsciiCase::Lower);
         let hex = DataBlock {
-            location: Location::Plaintext { encoding: TextEncoding::Hex, text },
+            location: Location::Text { encoding: TextEncoding::Hex, text },
             byte_order: ByteOrder::Little, // doesn't matter, since we're using raw_bytes
             checksum: None,
             compression: None,
@@ -879,7 +897,7 @@ mod tests {
 
         let text = base64_simd::STANDARD.encode_to_string(&data);
         let base64 = DataBlock {
-            location: Location::Plaintext { encoding: TextEncoding::Base64, text },
+            location: Location::Text { encoding: TextEncoding::Base64, text },
             ..hex
         };
         let mut reader = base64.location.raw_bytes(&ctx).unwrap();

@@ -30,6 +30,7 @@ fn local() -> HashSet<Host> {
 ///
 /// - For monolithic files, it stores the original file handle,
 /// - For distributed files, it stores the working directory and a list of trusted hosts
+// TODO: consider adding file handles for distributed files here
 #[derive(Debug)]
 pub struct Context {
     pub(super) source: Source,

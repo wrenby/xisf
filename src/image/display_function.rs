@@ -59,22 +59,32 @@ impl STF {
         }
     }
 
+    /// Midtones balance parameter
+    #[inline]
     pub fn mb(&self) -> f64 {
         self.midtones_balance
     }
 
+    /// Shadows clipping parameter
+    #[inline]
     pub fn sc(&self) -> f64 {
         self.shadows_clip
     }
 
+    /// Highlights clipping parameter
+    #[inline]
     pub fn hc(&self) -> f64 {
         self.highlights_clip
     }
 
+    /// Shadows expansion parameter
+    #[inline]
     pub fn se(&self) -> f64 {
         self.shadows_expansion
     }
 
+    /// Highlights expansion parameter
+    #[inline]
     pub fn he(&self) -> f64 {
         self.highlights_expansion
     }

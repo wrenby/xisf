@@ -47,7 +47,7 @@ fn main() {
     let mut args = pico_args::Arguments::from_env();
     let input: String = args.value_from_str("--in").expect("--in");
 
-    let (xisf, ctx) = xisf_rs::XISF::read_file(input, &Default::default()).expect("parse header");
+    let (xisf, ctx) = xisf_rs::XISF::open(input, &Default::default()).expect("parse header");
     println!("{xisf:#?}");
 
     // passing the file as a &mut Option because we want to do something different the first time this is run

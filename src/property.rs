@@ -92,22 +92,27 @@ pub enum PropertyType {
     C128Matrix,
 }
 impl PropertyType {
+    /// Returns true iff this type is a scalar
     pub fn is_scalar(&self) -> bool {
         const FIRST: u8 = PropertyType::Boolean as u8;
         const LAST: u8 = PropertyType::Float128 as u8;
         (FIRST..=LAST).contains(&(*self as u8))
     }
+    /// Returns true iff this type is complex
+    ///
     /// Does not return true for complex vectors or complex matrices
     pub fn is_complex(&self) -> bool {
         const FIRST: u8 = PropertyType::Complex32 as u8;
         const LAST: u8 = PropertyType::Complex128 as u8;
         (FIRST..=LAST).contains(&(*self as u8))
     }
+    /// Returns true iff this type is a vector
     pub fn is_vector(&self) -> bool {
         const FIRST: u8 = PropertyType::I8Vector as u8;
         const LAST: u8 = PropertyType::C128Vector as u8;
         (FIRST..=LAST).contains(&(*self as u8))
     }
+    /// Returns true iff this type is a Matrix
     pub fn is_matrix(&self) -> bool {
         const FIRST: u8 = PropertyType::I8Matrix as u8;
         const LAST: u8 = PropertyType::C128Matrix as u8;
@@ -242,9 +247,14 @@ impl Property {
     }
 }
 
+/// All properties are parsed lazily
 #[derive(Clone, Debug, PartialEq)]
 pub enum PropertyValue {
+    /// The value of this property is stored in the XML node itself
+    ///
+    /// This may come from a `value` attribute or from a text node, depending on the property type
     Plaintext(String),
+    /// The value of this property is stored in a [data block](crate::data_block::DataBlock)
     DataBlock(DataBlock),
 }
 

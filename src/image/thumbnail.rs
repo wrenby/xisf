@@ -34,6 +34,18 @@ const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
     ParseNodeError::new("Thumbnail", kind)
 }
 
+/// A small [`Image`] element
+///
+/// A [newtype](https://doc.rust-lang.org/rust-by-example/generics/new_types.html) wrapper for
+/// [`ImageBase`] with some added restrictions compared to [`Image`]:
+/// - Thumbnails must be two-dimensional
+/// - Thumbnail color space must be RGB or grayscale, with a single optional alpha channel
+/// - Thumbnail samples must be either UInt8 or UInt16
+/// - Thumbnails may not have a `bounds` attribute, and must use the full range of their sample type
+/// - Thumbnails may not have thumbnails
+/// - Thumbnails must be pre-demosaiced, and may not have a ColorFilterArray element
+///
+/// As a guideline, thumbnails should not be larger than 1024 pixels on either dimension.
 #[repr(transparent)]
 #[derive(Clone, Debug)]
 pub struct Thumbnail(ImageBase);

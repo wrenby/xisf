@@ -7,6 +7,7 @@ use std::{
 
 use url::{Host, Url};
 
+/// A failure to parse a simple value such as a primitive type or an enum, usually from an XML attribute
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParseValueError(pub &'static str);
 impl Display for ParseValueError {
@@ -16,32 +17,42 @@ impl Display for ParseValueError {
 }
 impl Error for ParseValueError {}
 
+/// A failure to parse a [FITS key](crate::image::FitsKeyContent) from the header
+///
+/// Counterpart to [`ReadPropertyError`]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReadFitsKeyError {
-    KeyNotFound,
+    /// Could not find a FITS key with the given name
+    NotFound,
+    /// Failed to parse the FITS key into the requested type
     InvalidFormat,
 }
 impl Display for ReadFitsKeyError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("Failed to read FITS key: ")?;
         match self {
-            &Self::KeyNotFound => f.write_str("Key not found in header"),
+            &Self::NotFound => f.write_str("Key not found in header"),
             &Self::InvalidFormat => f.write_str("Failed to parse key value"),
         }
     }
 }
 impl Error for ReadFitsKeyError {}
 
+/// A Failure to parse an [XISF Property](crate::property::PropertyContent)
+///
+/// Counterpart to [`ReadFitsKeyError`]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReadPropertyError {
-    KeyNotFound,
+    /// Could not find an XISF property with the given id
+    NotFound,
+    /// Failed to parse the property into the requested type
     InvalidFormat,
 }
 impl Display for ReadPropertyError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("Failed to read XISF property: ")?;
         match self {
-            &Self::KeyNotFound => f.write_str("ID not found"),
+            &Self::NotFound => f.write_str("ID not found"),
             &Self::InvalidFormat => f.write_str("Failed to parse value"),
         }
     }
@@ -55,10 +66,17 @@ impl Error for ReadPropertyError {}
 /// attempting to resolve the reference will return `InvalidUid` instead of `Recursive`
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ReferenceError {
+    /// The `ref` attribute is missing, so there isn't anything to search for
     MissingRef,
+    /// The `ref` attribute contains an invalid uid
+    ///
+    /// Valid uids satisfy the regex `[_a-zA-Z][_a-zA-Z0-9]*`
     InvalidUid,
+    /// No elements found with the requested uid
     NotFound,
+    /// Reference to a reference
     Recursive,
+    /// More than one element was found with the requested uid
     Ambiguous,
 }
 impl Display for ReferenceError {
@@ -68,20 +86,31 @@ impl Display for ReferenceError {
 }
 impl Error for ReferenceError {}
 
+///
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ParseNodeErrorKind {
+    /// Node
     InvalidReference,
+    /// This element requires an attribute that was not present
     MissingAttr,
+    /// An attribute on this element parsing or validation
     InvalidAttr,
+    /// This element requires a child node that was not present
     MissingChild,
     /// not used in a general case, only for when the child itself doesn't return its own ParseNodeError, such as
     /// the text nodes of embedded [`DataBlock`](crate::data_block::DataBlock)s
     InvalidChild,
 }
 
+/// A failure to parse a [Core Element](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#__XISF_Core_Elements__)
+/// from the XML document making up an XISF header
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParseNodeError {
+    /// The XML tag name of the element that could not be parsed
+    ///
+    /// E.g. if an `<Image ...>` element could not be parsed, `tag` will be "Image"
     pub tag: &'static str,
+    /// What went wrong while trying to parse the element
     pub kind: ParseNodeErrorKind,
 }
 impl ParseNodeError {
@@ -108,7 +137,7 @@ impl Display for ParseNodeError {
 }
 impl Error for ParseNodeError {}
 
-
+/// A failure to read bytes from a [`DataBlock`](crate::data_block::DataBlock)
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReadDataBlockError {
     /// Something went wrong while interacting with the underlying file or stream
@@ -167,9 +196,13 @@ impl Display for ReadDataBlockError {
             ReadDataBlockError::MissingHost => f.write_str("Remote data block URI is missing a host"),
         }
     }
-}impl Error for ReadDataBlockError {}
+}
+impl Error for ReadDataBlockError {}
 
-
+/// A failure to read an XISF file
+///
+/// Since data from XISF files are read lazily, a lack of `ReadFileError` does not guarantee that
+/// all data blocks can be read, or all FITS keys/XISF properties can be parsed, for example.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ReadFileError;
 impl Display for ReadFileError {
@@ -179,6 +212,8 @@ impl Display for ReadFileError {
 }
 impl Error for ReadFileError {}
 
+/// A failure to convert a [`DynImageData`](crate::image::DynImageData)
+/// enum to one of its [`ImageData`](crate::image::ImageData) variants
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DowncastDynImageError(pub &'static str);
 impl Display for DowncastDynImageError {
