@@ -117,7 +117,7 @@ impl Default for ReadOptions {
 /// # use xisf_rs::data_block::{ChecksumAlgorithm, CompressionAlgorithm, CompressionLevel};
 /// let opts = WriteOptions::new("My Awesome Astronomy Program")
 ///     .checksum_algorithm(Some(ChecksumAlgorithm::Sha3_512))
-///     .compression_algorithm(Some((CompressionAlgorithm::Zlib, CompressionLevel::Auto)));
+///     .compression_algorithm(Some((CompressionAlgorithm::Zlib, CompressionLevel::AUTO)));
 /// ```
 #[derive(Clone, Debug)]
 pub struct WriteOptions {

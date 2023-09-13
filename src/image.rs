@@ -58,15 +58,15 @@ pub use thumbnail::*;
 pub struct ImageBase {
     data_block: DataBlock,
     geometry: Vec<usize>,
-    pub sample_format: SampleFormat,
+    sample_format: SampleFormat,
 
-    pub image_type: Option<ImageType>,
-    pub pixel_storage: PixelStorage,
-    pub color_space: ColorSpace,
-    pub offset: f64,
-    pub orientation: Orientation,
-    pub id: Option<String>,
-    pub uuid: Option<Uuid>,
+    image_type: Option<ImageType>,
+    pixel_storage: PixelStorage,
+    color_space: ColorSpace,
+    offset: f64,
+    orientation: Option<Orientation>,
+    id: Option<String>,
+    uuid: Option<Uuid>,
 
     properties: HashMap<String, PropertyContent>,
     fits_header: ListOrderedMultimap<String, FitsKeyContent>,
@@ -110,7 +110,63 @@ impl ImageBase {
         self.num_channels() - self.color_space.num_channels()
     }
 
-    // TODO: convert CIE L*a*b images to RGB
+    /// Returns the sample format
+    #[inline]
+    pub fn sample_format(&self) -> SampleFormat {
+        self.sample_format
+    }
+
+    /// Returns the image type (bias, dark, flat, light, etc)
+    #[inline]
+    pub fn image_type(&self) -> Option<ImageType> {
+        self.image_type
+    }
+
+    /// Returns the pixel sample's layout in memory
+    #[inline]
+    pub fn pixel_layout(&self) -> PixelStorage {
+        self.pixel_storage
+    }
+
+    /// Returns the color space
+    #[inline]
+    pub fn color_space(&self) -> ColorSpace {
+        self.color_space
+    }
+
+    /// Returns the offset (AKA pedestal)
+    ///
+    /// An offset is a value added to all pixel samples, sometimes necessary to
+    /// ensure positive data from the sensor in the presence of noise
+    #[inline]
+    pub fn offset(&self) -> f64 {
+        self.offset
+    }
+
+    /// Returns a simple transformation (90-degree rotations and an a reflection) which should be applied before the image is displayed
+    #[inline]
+    pub fn orientation(&self) -> Option<Orientation> {
+        self.orientation
+    }
+
+    /// Returns the ID, if one exists
+    ///
+    /// An ID is a sequence of ASCII characters that may be used to identify the image to the end user,
+    /// and could be thought of as a name tag. Must satisfy the regex `[_a-zA-Z][_a-zA-Z0-9]*`.
+    // TODO: is ID validated while parsing?
+    #[inline]
+    pub fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    /// Returns the UUID, if one exists
+    #[inline]
+    pub fn uuid(&self) -> Option<Uuid> {
+        self.uuid
+    }
+
+    /// Reads data from the image's [data block](DataBlock) and packs it into an image type
+    // TODO: better handling for CIE L*a*b* images
     pub fn read_data(&self, ctx: &Context) -> Result<DynImageData, ReadDataBlockError> {
         self.data_block.verify_checksum(ctx)?;
         let reader = &mut *self.data_block.decompressed_bytes(ctx)?;
@@ -260,24 +316,36 @@ impl ImageBase {
         self.icc_profile.as_ref()
     }
 
+    /// Returns a reference to the RGB working space, if one is specified.
+    /// If none is specified, the default is the sRGB color space, relative to the D50 standard illuminant.
+    /// Consider using [`Option::unwrap_or_default()`] on the result.
     pub fn rgb_working_space(&self) -> Option<&RGBWorkingSpace> {
         self.rgb_working_space.as_ref()
     }
 
+    /// Returns a reference to the display function, if one is specified.
+    /// If none is specified, the default is the identity function.
+    /// Although the identity display function is the [`Default`], using [`Option::unwrap_or_default()`] on the result
+    /// would likely be unwise for most cases, as applying the identity function would result in unnecessary computation.
     pub fn display_function(&self) -> Option<&DisplayFunction> {
         self.display_function.as_ref()
     }
 
-    pub fn resolution(&self) -> Option<&Resolution> {
+    /// Returns the pixel density of this image, in pixels-per-inch or pixels-per-centimeter
+    /// If none is specified, the default is 72 PPI.
+    /// Consider using [`Option::unwrap_or_default()`] on the result
+    pub fn pixel_density(&self) -> Option<&Resolution> {
         self.resolution.as_ref()
     }
 }
 
+///
+///
+/// XISF images may have an arbitrary number of dimensions and
 #[derive(Clone, Debug)]
 pub struct Image {
     base: ImageBase,
-    /// For images in a non-RGB color space, these bounds apply to pixel sample values once converted to RGB, not in its native color space
-    pub bounds: Option<SampleBounds>,
+    bounds: Option<SampleBounds>,
     color_filter_array: Option<CFA>,
     thumbnail: Option<Thumbnail>,
 }
@@ -401,11 +469,11 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
     };
 
     let orientation = if let Some(val) = attrs.remove("orientation") {
-        val.parse::<Orientation>()
+        Some(val.parse::<Orientation>()
             .change_context(context(InvalidAttr))
-            .attach_printable("Invalid orientation attribute")?
+            .attach_printable("Invalid orientation attribute")?)
     } else {
-        Default::default()
+        None
     };
 
     let id = attrs.remove("id");
@@ -548,6 +616,13 @@ impl Image {
         parse_image::<Self>(node, xpath, opts)
     }
 
+    /// The minimum and maximum value for a pixel sample in this image.
+    /// For images in a non-RGB [color space](ColorSpace), these bounds apply to pixel sample values once converted to RGB, not in its native color space.
+    /// For integer [sample format](SampleFormat)s,
+    pub fn bounds(&self) -> Option<SampleBounds> {
+        self.bounds
+    }
+
     /// Returns the color filter array, if one exists
     pub fn cfa(&self) -> Option<&CFA> {
         self.color_filter_array.as_ref()
@@ -622,15 +697,32 @@ pub enum ImageType {
     MasterFlat,
     /// An integration (AKA stack) of two or more [`Light`](Self::Light) frames
     MasterLight,
-    /// an integer or floating point real image where nonzero pixel sample values represent invalid or defective pixels.
+    /// An integer or floating point real image where nonzero pixel sample values represent invalid or defective pixels.
     /// Defective pixels are typically ignored or replaced with plausible statistical estimates, such as robust averages of neighbor pixels.
     DefectMap,
+    /// For a process that takes multiple images as an input and produces one output while rejecting outliers, such as integration.
+    /// For any given pixel on the rejection map, the minimum value\* indicates that none of the corresponding pixels from the input images
+    /// were rejected for being **high outliers**, and following a linear scale between, the maximum value\* indicates that all of the
+    /// corresponding pixels from the input images were rejected. May be an integer or floating point real image.
+    ///
+    /// \* The minimum and maximum values of an [`Image`] are specified in the [`"bounds"`](SampleBounds) attribute of an [`Image`].
+    /// Optional for integer images, where the default is the lower and upper bounds of the integer type.
     RejectionMapHigh,
+    /// For a process that takes multiple images as an input and produces one output while rejecting outliers, such as integration.
+    /// For any given pixel on the rejection map, the minimum value\* indicates that none of the corresponding pixels from the input images
+    /// were rejected for being **low outliers**, and following a linear scale between, the maximum value\* indicates that all of the
+    /// corresponding pixels from the input images were rejected. May be an integer or floating point real image.
+    ///
+    /// \* The minimum and maximum values of an [`Image`] are specified in the [`"bounds"`](SampleBounds) attribute of an [`Image`].
+    /// Optional for integer images, where the default is the lower and upper bounds of the integer type.
     RejectionMapLow,
-    /// An integer image where a pixel sample value is nonzero if and only if the corresponding pixel sample of a given image
-    /// has been rejected in an integration process. A value of zero is Low and high binary rejection maps are to be interpreted as in the preceding paragraph for normal rejection maps.
-    /// Binary rejection maps should be generated as 8-bit unsigned integer images.
+    /// For a process that takes a single image as an input and produces one output while rejecting outliers, such as cosmetic correction.
+    /// For any given pixel on the rejection map, any nonzero value indicates that the corresponding input pixel was rejected for being a **high outlier**,
+    /// and a value of 0 indicates that the pixel was not rejected. Must be an 8-bit unsigned integer image.
     BinaryRejectionMapHigh,
+    /// For a process that takes a single image as an input and produces one output while rejecting outliers, such as cosmetic correction.
+    /// For any given pixel on the rejection map, any nonzero value indicates that the corresponding input pixel was rejected for being a **low outlier**,
+    /// and a value of 0 indicates that the pixel was not rejected. Must be an 8-bit unsigned integer image.
     BinaryRejectionMapLow,
     /// Integer or floating point real images where each pixel sample value is proportional to the slope of a straight line
     /// fitted to a set of integrated pixels at the corresponding pixel coordinates.
@@ -643,27 +735,33 @@ pub enum ImageType {
     WeightMap,
 }
 
-/// Describes the memory layout of the image
-/// - In `Planar` mode (the default when none is specified), the image is stored as all of the first channel, then all of the second channel, and so on.
-///   That is, for a W\*H 2D image with 3 channels and `u8` samples, pixel *p<sub>x,y,c</sub>* is stored at byte offset *WHc + Wy + x*
-/// - In `Normal` mode, the image is stored as the first pixel (its first channel, second channel, and so on), the second pixel (its first channel, second channel, and so on), and so on.
-///   That is, for a W\*H 2D image with 3 channels and `u8` samples, pixel *p<sub>x,y,c</sub>* is stored at byte offset *3Wy + 3x + c*
+/// Describes the memory layout of the image's pixel samples
 ///
 /// No matter which pixel storage layout is used, the pixel samples are stored in row-major order.
 /// See [the specification](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#pixel_storage_models) for more details and a visual representation of each layout.
 #[derive(Clone, Copy, Debug, Display, Default, EnumString, EnumVariantNames, PartialEq)]
 pub enum PixelStorage {
+    /// The image is stored as all of the first channel, then all of the second channel, and so on.
+    /// That is, for a W\*H 2D image with 3 channels and `u8` samples, pixel *p<sub>x,y,c</sub>* is stored at byte offset *WHc + Wy + x*.
+    /// Default when none is specified. See also [`memory_layout::Planar`].
     #[default]
     Planar,
+    /// The image is stored as the first pixel (its first channel, second channel, and so on),
+    /// the second pixel (its first channel, second channel, and so on), and so on.
+    /// That is, for a W\*H 2D image with 3 channels and `u8` samples, pixel *p<sub>x,y,c</sub>* is stored at byte offset *3Wy + 3x + c*.
+    /// See also [`memory_layout::Normal`].
     Normal,
 }
 
+/// An image's [color space](https://en.wikipedia.org/wiki/Color_space)
 #[derive(Clone, Copy, Debug, Display, Default, EnumString, EnumVariantNames, PartialEq)]
 pub enum ColorSpace {
+    /// A one-channel grayscale image. Default when none is specified.
     #[default]
-    /// A one-channel grayscale image
     Gray,
-    /// A three-channel RGB image
+    /// A three-channel RGB image. Arguably only a color *model* and not a color *space*;
+    /// requires context from an [`RGBWorkingSpace`] or [`ICCProfile`] element to become the latter.
+    /// Should be considered coordinates in the sRGB color space (relative to the D50 standard illuminant) if neither supporting element is present.
     RGB,
     /// A three-channel CIE L\*a\*b\* image
     CIELab,
@@ -678,14 +776,18 @@ impl ColorSpace {
     }
 }
 
-/// A transformation to be applied before visual presentation of the image
-///
-/// Rotation must be applied before the horizontal flip, if a flip is present.
-/// *Reminder: a horizontal reflection of a 2D image flips pixels across the y axis,
-/// leaving pixels on the far-right of the image on the far-left and vice-versa*
+/// A transformation to be applied before *visual presentation* of the image
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Orientation {
+    /// What kind of rotation should be applied, if any
+    ///
+    /// Should be applied *before* the horizontal flip, if a flip is present
     pub rotation: Rotation,
+    /// True iff a horizontal reflection should be applied
+    ///
+    /// Should be applied *after* the rotation, if a rotation is present.
+    /// *Reminder: a horizontal reflection of a 2D image flips pixels across the y axis,
+    /// leaving pixels on the far-right of the image on the far-left and vice-versa*
     pub hflip: bool,
 }
 impl fmt::Display for Orientation {
@@ -723,8 +825,8 @@ impl FromStr for Orientation {
 /// A rotation (in multiples of 90 degrees) to be applied before visual presentation of the image
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Rotation {
-    #[default]
     /// No rotation
+    #[default]
     None,
     /// A 90 degree clockwise rotation
     Cw90,
@@ -733,18 +835,13 @@ pub enum Rotation {
     /// A 180 degree rotation
     _180,
 }
-impl Rotation {
-    pub fn degrees(&self) -> i16 {
-        match self {
-            Rotation::None => 0,
-            Rotation::Cw90 => -90,
-            Rotation::Ccw90 => 90,
-            Rotation::_180 => 180,
-        }
-    }
-}
 impl fmt::Display for Rotation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_fmt(format_args!("{}", self.degrees()))
+        f.write_str(match self {
+            Rotation::None => "0",
+            Rotation::Cw90 => "-90",
+            Rotation::Ccw90 => "90",
+            Rotation::_180 => "180",
+        })
     }
 }

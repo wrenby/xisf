@@ -93,7 +93,8 @@ fn main() {
     let out: String = args.value_from_str("--out").expect("--out");
     for (i, image) in xisf.images().enumerate() {
         let data = image.read_data(&ctx).expect(format!("read image {i} data").as_str());
-        let name = image.id.clone().unwrap_or(format!("IMAGE_{i}"));
+        let default = format!("IMAGE_{i}");
+        let name = image.id().unwrap_or(&default);
         match data {
             DynImageData::UInt8(arr) => write_array(&mut fits, &out, arr, name, ImageType::UnsignedByte),
             DynImageData::UInt16(arr) => write_array(&mut fits, &out, arr, name, ImageType::UnsignedShort),

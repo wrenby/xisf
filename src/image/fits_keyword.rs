@@ -78,9 +78,9 @@ impl FitsKeyContent {
     }
 }
 
-/// Conversions between FITS keys and concrete types
+/// Convert a FITS key to a concrete type
 pub trait FromFitsKey: Sized {
-    /// Attempt to parse a FITS key as Self
+    /// Attempt to parse a FITS key as `Self`
     fn from_fits_key(content: &FitsKeyContent) -> Result<Self, ParseValueError>;
 }
 impl FromFitsKey for String {

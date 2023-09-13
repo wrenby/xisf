@@ -6,7 +6,7 @@ use std::{
     io::{self, Read, BufReader, Seek, Cursor, Write, Take},
     fmt,
     fs::File,
-    num::{NonZeroU8, NonZeroU64},
+    num::NonZeroU64,
     path::PathBuf,
     str::FromStr,
 };
@@ -36,11 +36,19 @@ pub use context::*;
 mod sub_blocks;
 use sub_blocks::*;
 
+/// The XISF file format's representation of any kind of binary data
+///
+/// Most commonly used for [images](crate::image::Image), this type is essentially
+/// a reference to a file or part of a file where the raw data can be read from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataBlock {
+    /// Where this data block can be found
     pub location: Location,
+    /// The byte order/endianness of this data block
     pub byte_order: ByteOrder,
+    /// A checksum that the data must match, if one exists
     pub checksum: Option<Checksum>,
+    /// The type of compression that was used, if any
     pub compression: Option<Compression>,
 }
 impl DataBlock {
@@ -172,6 +180,7 @@ impl DataBlock {
     }
 }
 
+/// Where to find this data block
 #[derive(Clone, Debug, PartialEq)]
 pub enum Location {
     /// Inline or embedded: data is encoded in a child text or &lt;Data&gt; node
@@ -530,7 +539,7 @@ impl<'a, R> ReadTakeRefExt<'a, R> for RefMut<'a, R> where R: Read {
     }
 }
 
-/// Describes the encoding of an [inline or embedded](Location::Plaintext) data block
+/// Describes the encoding of an [inline or embedded](Location::Text) data block
 #[derive(Clone, Copy, Debug, Default, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum TextEncoding {
     /// [Base 64 encoding](https://datatracker.ietf.org/doc/html/rfc4648#section-4)
@@ -554,26 +563,38 @@ pub enum ByteOrder {
     Little,
 }
 
+/// A cryptographic hash function used to compute a [data block](DataBlock)'s [checksum](Checksum)
 #[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
 pub enum ChecksumAlgorithm {
+    /// The SHA-1 cryptographic hash function
     #[strum(serialize = "sha-1", serialize = "sha1")]
     Sha1,
+    /// The SHA-256 cryptographic hash function
     #[strum(serialize = "sha-256", serialize = "sha256")]
     Sha256,
+    /// The SHA-512 cryptographic hash function
     #[strum(serialize = "sha-512", serialize = "sha512")]
     Sha512,
+    /// The SHA3-256 cryptographic hash function
     #[strum(serialize = "sha3-256")]
     Sha3_256,
+    /// The SHA3-512 cryptographic hash function
     #[strum(serialize = "sha3-512")]
     Sha3_512,
 }
 
+/// A checksum digest for a [data block](DataBlock) with a given algorithm
 #[derive(Clone, Debug, PartialEq)]
 pub enum Checksum {
+    /// A 20-byte digest for the SHA-1 cryptographic hash function
     Sha1([u8; 20]),
+    /// A 32-byte digest for the SHA-256 cryptographic hash function
     Sha256([u8; 32]),
+    /// A 64-byte digest for the SHA-512 cryptographic hash function
     Sha512([u8; 64]),
+    /// A 32-byte digest for the SHA3-256 cryptographic hash function
     Sha3_256([u8; 32]),
+    /// A 64-byte digest for the SHA3-512 cryptographic hash function
     Sha3_512([u8; 64]),
 }
 impl fmt::Display for Checksum {
@@ -638,6 +659,7 @@ impl FromStr for Checksum {
     }
 }
 impl Checksum {
+    /// Returns a slice to the digest
     pub fn as_slice(&self) -> &[u8] {
         match self {
             Checksum::Sha1(digest) => &digest[..],
@@ -649,15 +671,25 @@ impl Checksum {
     }
 }
 
+/// All configuration options pertaining to sub-block compression
 #[derive(Clone, Debug, PartialEq)]
 pub struct Compression {
+    /// The algorithm used to compress this block
     pub algorithm: CompressionAlgorithm,
     /// Will always have at least one element, even if no sub-blocks were specified
     /// in that case, sub-blocks will be one element, initialized with compressed-size taken from the data block,
     /// and uncompressed-size taken from the compression attribute
-    /// * Not exposed in public API because compressed size is not always reliable
+    ///
+    /// <div class="warning">
+    ///
+    /// In the event that the sub-blocks attribute was not specified, and the data block is not [`attached`](Location::Attachment),
+    /// there is no way to know the compressed size of the block, and that size will instead be [`u64::MAX`].
+    /// The compressed size should not be relied on for
+    ///
+    /// </div>
     pub(crate) sub_blocks: SubBlocks,
-    /// The `NonZeroUsize` is the item size
+    /// If `Some`, the `NonZeroUsize` is the item size.
+    /// If `None`, this block is not using byte-shuffling.
     pub byte_shuffling: Option<NonZeroU64>,
 }
 impl Compression {
@@ -667,11 +699,16 @@ impl Compression {
     }
 }
 
+/// An algorithm used to compress or decompress a [data block](DataBlock)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum CompressionAlgorithm {
+    /// [Zlib](https://datatracker.ietf.org/doc/html/rfc1950)
     Zlib,
+    /// [LZ4](https://lz4.org/)
     Lz4,
+    /// Lz4 High-Compression, a variant of [LZ4](Self::Lz4) which sacrifices speed for an improved compression ratio
     Lz4HC,
+    /// [Zstandard, AKA zstd](https://datatracker.ietf.org/doc/html/rfc8478)
     Zstd,
 }
 
@@ -843,20 +880,35 @@ impl FromStr for SubBlocks {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum CompressionLevel {
-    #[default]
-    Auto,
-    Value(NonZeroU8), // minimum: 1, maximum: 100
+/// An codec-independent value between 1 and 100 indicating the trade-off between speed and compression ratio.
+///
+/// A low value sacrifices compression ratio for speed, a high value sacrifices speed for compression ratio.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CompressionLevel(u8);
+impl CompressionLevel {
+    /// Selects a
+    // Zlib => 6
+    // Lz4 => 64
+    // Lz4HC => 9
+    // Zstd => 3 (zstd::DEFAULT_COMPRESSION_LEVEL)
+    pub const AUTO: Self = Self(0);
 }
 impl CompressionLevel {
+    /// Create a new `CompressionLevel`
+    ///
+    /// Fails if `level` is outside the range `1..=100`
     pub fn new(level: u8) -> Result<Self, ParseValueError> {
         match level {
-            0 => Ok(Self::Auto),
-            (1..=100) => Ok(Self::Value(NonZeroU8::new(level).unwrap())), // safe because the match arm range does not contain 0
+            val @ 1..=100 => Ok(Self(val)),
             bad => Err(ParseValueError("CompressionLevel"))
-                .attach_printable(format!("Must be between 0 and 100, found {bad}"))
+                .attach_printable(format!("Must be between 1 and 100, found {bad}"))
         }
+    }
+}
+impl Default for CompressionLevel {
+    fn default() -> Self {
+        Self::AUTO
     }
 }
 
