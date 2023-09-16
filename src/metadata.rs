@@ -1,10 +1,10 @@
-use std::{collections::HashMap, ops::Deref};
+use std::collections::HashMap;
 
 use error_stack::{Result, ResultExt};
 use libxml::{readonly::RoNode, xpath::Context as XpathContext};
 
 use crate::{
-    property::{PropertyContent, Property},
+    property::{Property, Properties},
     error::{ParseNodeError, ParseNodeErrorKind::{self, *}},
     reference::MaybeReference,
 };
@@ -13,17 +13,9 @@ const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
     ParseNodeError::new("Metadata", kind)
 }
 
+#[repr(transparent)]
 #[derive(Clone, Debug)]
-pub(crate) struct Metadata {
-    properties: HashMap<String, PropertyContent>,
-}
-impl Deref for Metadata {
-    type Target = HashMap<String, PropertyContent>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.properties
-    }
-}
+pub(crate) struct Metadata(pub(crate) Properties);
 impl Metadata {
     pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext) -> Result<Self, ParseNodeError> {
         let _span_guard = tracing::debug_span!("Metadata");
@@ -50,8 +42,6 @@ impl Metadata {
             }
         }
 
-        Ok(Self {
-            properties,
-        })
+        Ok(Self(Properties::new(properties)))
     }
 }

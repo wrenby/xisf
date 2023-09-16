@@ -1,46 +1,76 @@
 //! XISF property parsing
 //!
-//! Nothing in here will be likely to be used directly, but it's exposed as a public module
-//! as a means to
 //!
-//! See [`ImageBase::parse_property`](crate::image::ImageBase::parse_property),
-//! [`XISF::parse_property`](crate::XISF::parse_property),
-//! and [`XISF::parse_metadata`](crate::XISF::parse_metadata) for likely entry points
+//! [Images](crate::image::Image) and [XISF root elements](crate::XISF) may have an arbitrary number of
+//! "XISF properties": an association of a locally-unique ID with a type, value, format specifier, and comment.
+//! Format specifiers are currently not supported.
+
+use std::{collections::HashMap, fmt::Display, str::FromStr};
 
 use error_stack::{report, Result, ResultExt, Report};
 use libxml::{readonly::RoNode, tree::NodeType};
 use num_complex::Complex;
-use strum::{EnumString, Display};
+use strum::Display;
 use time::{OffsetDateTime, format_description::well_known::Iso8601};
 
 use crate::{
     data_block::{Context, DataBlock},
-    error::{ParseValueError, ParseNodeError, ParseNodeErrorKind::{self, *}},
+    error::{ParseValueError, ParseNodeError, ParseNodeErrorKind::{self, *}, ReadPropertyError},
     reference::is_valid_id
 };
 
+/// A container for XISF properties
+///
+/// Reused across [`Image`](crate::image::Image) and [`XISF`](crate::XISF)
+#[derive(Clone, Debug)]
+pub struct Properties(HashMap<String, PropertyContent>);
+impl Properties {
+    /// Creates a new XISF property list
+    pub(crate) fn new(map: HashMap<String, PropertyContent>) -> Self {
+        Self(map)
+    }
+
+    /// Returns true iff an XISF property is present with the given ID
+    pub fn contains(&self, id: impl AsRef<str>) -> bool {
+        self.0.contains_key(id.as_ref())
+    }
+
+    /// Attempts to parse an XISF property with the given ID as type T
+    ///
+    /// To read a value and comment pair, use the pattern `let (value, comment) = properties.parse_property("ID", &xisf)?;`
+    pub fn parse<T: FromProperty>(&self, id: impl AsRef<str>, ctx: &Context) -> Result<T, ReadPropertyError> {
+        let content = self.0.get(id.as_ref())
+            .ok_or(report!(ReadPropertyError::NotFound))?;
+        T::from_property(&content, ctx)
+            .change_context(ReadPropertyError::InvalidFormat)
+    }
+
+    /// Returns the raw content of the XISF property matching the given ID`
+    pub fn raw(&self, id: impl AsRef<str>) -> Option<&PropertyContent> {
+        self.0.get(id.as_ref())
+    }
+
+    /// Iterates through all XISF properties as (id, content) tuples,
+    /// in the order they appear in file, returned as raw unparsed strings/data blocks.
+    pub fn all_raw(&self) -> impl Iterator<Item = (&String, &PropertyContent)> {
+        self.0.iter()
+    }
+}
+
 /// A data type associated with an XISF property
 // TODO: find a better representation for this -- need to store vector length and matrix width/height, and don't want to duplicate a ton of stuff to do it
-#[repr(u8)]
-#[derive(Clone, Copy, Debug, Display, EnumString, PartialEq)]
-pub enum PropertyType {
-    /// A boolean (true or false)
-    Boolean,
+#[derive(Clone, Copy, Debug, Display, PartialEq, Eq)]
+pub enum NumericType {
     /// A scalar 8-bit signed integer
     Int8,
-    #[strum(serialize = "UInt8", serialize = "Byte")]
     /// A scalar 8-bit unsigned integer
     UInt8,
-    #[strum(serialize = "Int16", serialize = "Short")]
     /// A scalar 16-bit signed integer
     Int16,
-    #[strum(serialize = "UInt16", serialize = "UShort")]
     /// A scalar 16-bit unsigned integer
     UInt16,
-    #[strum(serialize = "Int32", serialize = "Int")]
     /// A scalar 32-bit signed integer
     Int32,
-    #[strum(serialize = "UInt32", serialize = "UInt")]
     /// A scalar 32-bit unsigned integer
     UInt32,
     /// A scalar 64-bit signed integer
@@ -52,129 +82,142 @@ pub enum PropertyType {
     /// A scalar 128-bit unsigned integer
     UInt128,
     /// A scalar 32-bit floating point real number
-    #[strum(serialize = "Float32", serialize = "Float")]
     Float32,
     /// A scalar 64-bit floating point real number
-    #[strum(serialize = "Float64", serialize = "Double")]
     Float64,
     /// A scalar 128-bit floating point real number
-    #[strum(serialize = "Float128", serialize = "Quad")]
     Float128,
     /// A complex number with 32-bit floating point parts
     Complex32,
     /// A complex number with 64-bit floating point parts
-    #[strum(serialize = "Complex64", serialize = "Complex")]
     Complex64,
     /// A complex number with 128-bit floating point parts
     Complex128,
+}
+impl NumericType {
+    fn prefix(&self) -> &'static str {
+        match self {
+            NumericType::Int8 => "I8",
+            NumericType::UInt8 => "UI8",
+            NumericType::Int16 => "I16",
+            NumericType::UInt16 => "UI16",
+            NumericType::Int32 => "I32",
+            NumericType::UInt32 => "UI32",
+            NumericType::Int64 => "I64",
+            NumericType::UInt64 => "UI64",
+            NumericType::Int128 => "I128",
+            NumericType::UInt128 => "UI128",
+            NumericType::Float32 => "F32",
+            NumericType::Float64 => "F64",
+            NumericType::Float128 => "F128",
+            NumericType::Complex32 => "C32",
+            NumericType::Complex64 => "C64",
+            NumericType::Complex128 => "C128",
+        }
+    }
+}
+
+/// What data type the property expects to be parsed into
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PropertyType {
+    /// A boolean (true or false)
+    Boolean,
+    /// An integer, real, or complex number
+    Number(NumericType),
     /// A string of Unicode characters
     String,
     /// A date + time + UTC offset, conforming to ISO-8601
     TimePoint,
-    /// A vector of [`Int8`](Self::Int8) elements
-    I8Vector,
-    #[strum(serialize = "UI8Vector", serialize = "ByteArray")]
-    /// A vector of [`UInt8`](Self::UInt8) elements
-    UI8Vector,
-    /// A vector of [`Int16`](Self::Int16) elements
-    I16Vector,
-    /// A vector of [`UInt16`](Self::UInt16) elements
-    UI16Vector,
-    #[strum(serialize = "I32Vector", serialize = "IVector")]
-    /// A vector of [`Int32`](Self::Int32) elements
-    I32Vector,
-    #[strum(serialize = "UI32Vector", serialize = "UIVector")]
-    /// A vector of [`UInt32`](Self::UInt32) elements
-    UI32Vector,
-    /// A vector of [`Int64`](Self::Int64) elements
-    I64Vector,
-    /// A vector of [`UInt64`](Self::UInt64) elements
-    UI64Vector,
-    /// A vector of [`Int128`](Self::Int128) elements
-    I128Vector,
-    /// A vector of [`UInt128`](Self::UInt128) elements
-    UI128Vector,
-    /// A vector of [`Float32`](Self::Float32) elements
-    F32Vector,
-    #[strum(serialize = "F64Vector", serialize = "Vector")]
-    /// A vector of [`Float64`](Self::Float64) elements
-    F64Vector,
-    /// A vector of [`Float128`](Self::Float128) elements
-    F128Vector,
-    /// A vector of [`Complex32`](Self::Complex32) elements
-    C32Vector,
-    /// A vector of [`Complex64`](Self::Complex64) elements
-    C64Vector,
-    /// A vector of [`Complex128`](Self::Complex128) elements
-    C128Vector,
-    /// A matrix of [`Int8`](Self::Int8) elements
-    I8Matrix,
-    #[strum(serialize = "UI8Matrix", serialize = "ByteMatrix")]
-    /// A matrix of [`UInt8`](Self::UInt8) elements
-    UI8Matrix,
-    /// A matrix of [`Int16`](Self::Int16) elements
-    I16Matrix,
-    /// A matrix of [`UInt16`](Self::UInt16) elements
-    UI16Matrix,
-    #[strum(serialize = "I32Matrix", serialize = "IMatrix")]
-    /// A matrix of [`Int32`](Self::Int32) elements
-    I32Matrix,
-    #[strum(serialize = "UI32Matrix", serialize = "UIMatrix")]
-    /// A matrix of [`UInt32`](Self::UInt32) elements
-    UI32Matrix,
-    /// A matrix of [`Int64`](Self::Int64) elements
-    I64Matrix,
-    /// A matrix of [`UInt64`](Self::UInt64) elements
-    UI64Matrix,
-    /// A matrix of [`Int128`](Self::Int128) elements
-    I128Matrix,
-    /// A matrix of [`UInt128`](Self::UInt128) elements
-    UI128Matrix,
-    /// A matrix of [`Float32`](Self::Float32) elements
-    F32Matrix,
-    #[strum(serialize = "F64Matrix", serialize = "Matrix")]
-    /// A matrix of [`Float64`](Self::Float64) elements
-    F64Matrix,
-    /// A matrix of [`Float128`](Self::Float128) elements
-    F128Matrix,
-    /// A matrix of [`Complex32`](Self::Complex32) elements
-    C32Matrix,
-    /// A matrix of [`Complex64`](Self::Complex64) elements
-    C64Matrix,
-    /// A matrix of [`Complex128`](Self::Complex128) elements
-    C128Matrix,
+    /// A vector (1D array) of numbers
+    Vector(NumericType),
+    /// M matrix (2D array) of numbers
+    Matrix(NumericType),
+}
+impl Display for PropertyType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Boolean => f.write_str("Boolean"),
+            Self::Number(n) => n.fmt(f),
+            Self::String => f.write_str("String"),
+            Self::TimePoint => f.write_str("TimePoint"),
+            Self::Vector(n) => f.write_fmt(format_args!("{}Vector", n.prefix())),
+            Self::Matrix(n) => f.write_fmt(format_args!("{}Matrix", n.prefix())),
+        }
+    }
+}
+impl FromStr for PropertyType {
+    type Err = Report<ParseValueError>;
+
+    fn from_str(s: &str) -> Result<Self, ParseValueError> {
+        match s {
+            "Boolean" => Ok(Self::Boolean),
+
+            "Int8" => Ok(Self::Number(NumericType::Int8)),
+            "UInt8" | "Byte" => Ok(Self::Number(NumericType::UInt8)),
+            "Int16" | "Short" => Ok(Self::Number(NumericType::Int16)),
+            "UInt16" | "UShort" => Ok(Self::Number(NumericType::UInt16)),
+            "Int32" | "Int" => Ok(Self::Number(NumericType::Int32)),
+            "UInt32" | "UInt" => Ok(Self::Number(NumericType::UInt32)),
+            "Int64" => Ok(Self::Number(NumericType::Int64)),
+            "UInt64" => Ok(Self::Number(NumericType::UInt64)),
+            "Int128" => Ok(Self::Number(NumericType::Int128)),
+            "UInt128" => Ok(Self::Number(NumericType::UInt128)),
+            "Float32" | "Float" => Ok(Self::Number(NumericType::Float32)),
+            "Float64" | "Double" => Ok(Self::Number(NumericType::Float64)),
+            "Float128" | "Quad" => Ok(Self::Number(NumericType::Float128)),
+            "Complex32" => Ok(Self::Number(NumericType::Complex32)),
+            "Complex64" | "Complex" => Ok(Self::Number(NumericType::Complex64)),
+            "Complex128" => Ok(Self::Number(NumericType::Complex128)),
+
+            "String" => Ok(Self::String),
+            "TimePoint" => Ok(Self::TimePoint),
+
+            "I8Vector" => Ok(Self::Vector(NumericType::Int8)),
+            "UI8Vector" | "ByteArray" => Ok(Self::Vector(NumericType::UInt8)),
+            "I16Vector" => Ok(Self::Vector(NumericType::Int16)),
+            "UI16Vector" => Ok(Self::Vector(NumericType::UInt16)),
+            "I32Vector" | "IVector" => Ok(Self::Vector(NumericType::Int32)),
+            "UI32Vector" | "UIVector" => Ok(Self::Vector(NumericType::UInt32)),
+            "I64Vector" => Ok(Self::Vector(NumericType::Int64)),
+            "UI64Vector" => Ok(Self::Vector(NumericType::UInt64)),
+            "I128Vector" => Ok(Self::Vector(NumericType::Int128)),
+            "UI128Vector" => Ok(Self::Vector(NumericType::UInt128)),
+            "F32Vector" => Ok(Self::Vector(NumericType::Float32)),
+            "F64Vector" | "Vector" => Ok(Self::Vector(NumericType::Float64)),
+            "F128Vector" => Ok(Self::Vector(NumericType::Float128)),
+            "C32Vector" => Ok(Self::Vector(NumericType::Complex32)),
+            "C6Vector" => Ok(Self::Vector(NumericType::Complex64)),
+            "C128Vector" => Ok(Self::Vector(NumericType::Complex128)),
+
+            "I8Matrix" => Ok(Self::Matrix(NumericType::Int8)),
+            "UI8Matrix" | "ByteMatrix" => Ok(Self::Matrix(NumericType::UInt8)),
+            "I16Matrix" => Ok(Self::Matrix(NumericType::Int16)),
+            "UI16Matrix" => Ok(Self::Matrix(NumericType::UInt16)),
+            "I32Matrix" | "IMatrix" => Ok(Self::Matrix(NumericType::Int32)),
+            "UI32Matrix" | "UIMatrix" => Ok(Self::Matrix(NumericType::UInt32)),
+            "I64Matrix" => Ok(Self::Matrix(NumericType::Int64)),
+            "UI64Matrix" => Ok(Self::Matrix(NumericType::UInt64)),
+            "I128Matrix" => Ok(Self::Matrix(NumericType::Int128)),
+            "UI128Matrix" => Ok(Self::Matrix(NumericType::UInt128)),
+            "F32Matrix" => Ok(Self::Matrix(NumericType::Float32)),
+            "F64Matrix" | "Matrix" => Ok(Self::Matrix(NumericType::Float64)),
+            "F128Matrix" => Ok(Self::Matrix(NumericType::Float128)),
+            "C32Matrix" => Ok(Self::Matrix(NumericType::Complex32)),
+            "C6Matrix" => Ok(Self::Matrix(NumericType::Complex64)),
+            "C128Matrix" => Ok(Self::Matrix(NumericType::Complex128)),
+
+            bad => Err(ParseValueError("PropertyType"))
+                .attach_printable(format!("Invalid type: {bad}"))
+        }
+    }
+//
 }
 impl PropertyType {
-    /// Returns true iff this type is a scalar
-    ///
-    /// Does not return true for vectors or matrices with scalar elements
-    pub fn is_scalar(&self) -> bool {
-        const FIRST: u8 = PropertyType::Boolean as u8;
-        const LAST: u8 = PropertyType::Float128 as u8;
-        (FIRST..=LAST).contains(&(*self as u8))
-    }
-    /// Returns true iff this type is complex
-    ///
-    /// Does not return true for vectors or matrices with complex elements
-    pub fn is_complex(&self) -> bool {
-        const FIRST: u8 = PropertyType::Complex32 as u8;
-        const LAST: u8 = PropertyType::Complex128 as u8;
-        (FIRST..=LAST).contains(&(*self as u8))
-    }
-    /// Returns true iff this type is a vector
-    pub fn is_vector(&self) -> bool {
-        const FIRST: u8 = PropertyType::I8Vector as u8;
-        const LAST: u8 = PropertyType::C128Vector as u8;
-        (FIRST..=LAST).contains(&(*self as u8))
-    }
-    /// Returns true iff this type is a matrix
-    pub fn is_matrix(&self) -> bool {
-        const FIRST: u8 = PropertyType::I8Matrix as u8;
-        const LAST: u8 = PropertyType::C128Matrix as u8;
-        (FIRST..=LAST).contains(&(*self as u8))
-    }
     pub(crate) fn requires_data_block(&self) -> bool {
-        self.is_vector() || self.is_matrix()
+        match self {
+            Self::Matrix(_) | Self::Vector(_) => true,
+            _ => false,
+        }
     }
 }
 
@@ -306,7 +349,7 @@ impl Property {
 ///
 /// Since properties are parsed lazily,
 ///
-/// For simple (atomic) types such as [Int32](PropertyType::Int32) or [TimePoint](PropertyType::TimePoint),
+/// For simple (atomic) types such as [numbers](PropertyType::Number) or [TimePoint](PropertyType::TimePoint),
 /// this will come from a `value` attribute in the XML node -- with the exception of [String](PropertyType::String)
 /// properties, which have their own rules -- and will be stored in the `Plaintext` variant.
 ///
@@ -368,7 +411,7 @@ macro_rules! from_property_scalar {
         impl FromProperty for $t {
             fn from_property(prop: &PropertyContent, _ctx: &Context) -> Result<Self, ParseValueError> {
                 const CONTEXT: ParseValueError = ParseValueError(concat!("XISF Property key as ", stringify!($t)));
-                if prop.r#type == PropertyType::$variant {
+                if prop.r#type == PropertyType::Number(NumericType::$variant) {
                     if let PropertyValue::Plaintext(text) = &prop.value {
                         Ok(text.trim().parse::<$t>().change_context(CONTEXT)?)
                     } else {
@@ -402,7 +445,7 @@ macro_rules! from_property_complex {
         impl FromProperty for Complex<$t> {
             fn from_property(prop: &PropertyContent, _ctx: &Context) -> Result<Self, ParseValueError> {
                 const CONTEXT: ParseValueError = ParseValueError(concat!("XISF Property key as Complex<", stringify!($t), '>'));
-                if prop.r#type == PropertyType::$variant {
+                if prop.r#type == PropertyType::Number(NumericType::$variant) {
                     if let PropertyValue::Plaintext(text) = &prop.value {
                         let val = text.trim();
                         if val.starts_with('(') && val.ends_with(')') {

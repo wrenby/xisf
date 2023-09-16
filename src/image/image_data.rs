@@ -120,7 +120,7 @@ use memory_layout::*;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```
 /// # use std::error::Error;
 /// # use xisf_rs::{XISF, image::ImageData};
 /// # use ndarray::s;

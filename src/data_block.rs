@@ -1004,7 +1004,7 @@ mod tests {
         check_gradient(&array);
     }
 
-    #[cfg(all(feature = "remote-http", not(docsrs)))]
+    #[cfg(feature = "remote-http")]
     #[test]
     fn http_bin_file() {
         use url::Host;
@@ -1026,7 +1026,7 @@ mod tests {
         check_gradient(&array);
     }
 
-    #[cfg(all(feature = "remote-ftp", not(docsrs)))]
+    #[cfg(feature = "remote-ftp")]
     #[test]
     fn ftp_bin_file() {
         use testcontainers::{core::WaitFor, clients::Cli, images::generic::GenericImage, RunnableImage};

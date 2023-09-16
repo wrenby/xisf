@@ -1,15 +1,88 @@
 use error_stack::{Report, report, Result, ResultExt};
 use libxml::readonly::RoNode;
 use num_complex::Complex;
+use ordered_multimap::ListOrderedMultimap;
 use time::{OffsetDateTime, format_description::well_known::Iso8601};
 
-use crate::error::{ParseNodeError, ParseValueError, ParseNodeErrorKind::{self, *}};
+use crate::error::{ParseNodeError, ParseValueError, ParseNodeErrorKind::{self, *}, ReadFitsKeyError};
 
 fn report(kind: ParseNodeErrorKind) -> Report<ParseNodeError> {
     report!(context(kind))
 }
 const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
-    ParseNodeError::new("FitsKeyword", kind)
+    ParseNodeError::new("FITSKeyword", kind)
+}
+
+/// Container for all the FITS keys on an image; a FITS header
+// TODO: change type from ListOrderedMultiMap to BTreeMap<FitsKeyName>
+#[derive(Clone, Debug)]
+pub struct FitsKeys(ListOrderedMultimap<String, FitsKeyContent>);
+impl FitsKeys {
+    /// Create a new FitsKey header
+    pub(crate) fn new(map: ListOrderedMultimap<String, FitsKeyContent>) -> Self {
+        Self(map)
+    }
+
+    /// Returns true iff the given FITS key is present in the header
+    pub fn contains(&self, name: impl AsRef<str>) -> bool {
+        self.0.get(name.as_ref()).is_some()
+    }
+
+    /// Attempts to parse a FITS key with the given name as type `T`, following the syntax laid out in
+    /// [section 4.1](https://fits.gsfc.nasa.gov/standard40/fits_standard40aa-le.pdf#subsection.4.1) of the FITS specification.
+    /// If there is more than one key present with the given name, only the first one is returned.
+    pub fn parse_key<T: FromFitsKey>(&self, name: impl AsRef<str>) -> Result<T, ReadFitsKeyError> {
+        let content = self.0.get(name.as_ref())
+            .ok_or(report!(ReadFitsKeyError::NotFound))?;
+        T::from_fits_key(content)
+            .change_context(ReadFitsKeyError::InvalidFormat)
+    }
+
+    /// Returns an iterator over all values in the FITS header matching the given name.
+    /// Each key is attempted to be parsed as type `T`, following the syntax laid out in
+    /// [section 4.1](https://fits.gsfc.nasa.gov/standard40/fits_standard40aa-le.pdf#subsection.4.1) of the FITS specification.
+    pub fn parse_keys<T: FromFitsKey>(&self, name: impl AsRef<str>) -> impl Iterator<Item = Result<T, ParseValueError>> + '_ {
+        self.0.get_all(name.as_ref())
+            .map(|content| T::from_fits_key(content))
+    }
+
+    /// Returns the raw string (both value and comment) of the FITS key matching the given name
+    pub fn raw_key(&self, name: impl AsRef<str>) -> Option<&FitsKeyContent> {
+        self.0.get(name.as_ref())
+    }
+
+    /// Returns an iterator over all values (and comments) of keys in the FITS header matching the given name.
+    /// Although most keys are only allowed to appear once in a header, this is especially useful for the HISTORY keyword,
+    /// where a new key is typically appended to the FITS header each time the image is processed in some way
+    pub fn raw_keys(&self, name: impl AsRef<str>) -> impl Iterator<Item = &FitsKeyContent> {
+        self.0.get_all(name.as_ref())
+    }
+
+    ///
+    pub fn comment(&self, name: impl AsRef<str>) -> Option<&str> {
+        self.raw_key(name).map(|FitsKeyContent { comment, .. }| { comment.as_str() })
+    }
+
+    ///
+    ///
+    /// # Example
+    /// ```
+    /// # fn print_history(fits_keys: &FitsKeys) {
+    /// let history: Vec<_> = fits_keys.comments("HISTORY").collect();
+    /// for line in history {
+    ///     println!("{}", line);
+    /// }
+    /// # }
+    /// ```
+    pub fn comments(&self, name: impl AsRef<str>) -> impl Iterator<Item = &str> {
+        self.raw_keys(name).map(|FitsKeyContent { comment, .. }| { comment.as_str() })
+    }
+
+    /// Iterates through all FITS keys as (key, value+comment) tuples,
+    /// in the order they appear in file, returned as raw unparsed strings.
+    pub fn all_raw_keys(&self) -> impl Iterator<Item = (&String, &FitsKeyContent)> {
+        self.0.iter()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

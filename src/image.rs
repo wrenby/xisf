@@ -4,7 +4,7 @@ use std::{
     any::TypeId,
     io::Read,
     fmt,
-    str::FromStr, ops::Deref, collections::HashMap,
+    str::FromStr, collections::HashMap,
 };
 
 use byteorder::{ReadBytesExt, LE, BE};
@@ -18,11 +18,11 @@ use strum::{Display, EnumString, EnumVariantNames, VariantNames};
 use uuid::Uuid;
 use crate::{
     data_block::{ByteOrder, Context, DataBlock},
-    error::{ReadDataBlockError, ParseValueError, ReadFitsKeyError, ParseNodeErrorKind::*, ReadPropertyError},
+    error::{ReadDataBlockError, ParseValueError, ParseNodeErrorKind::*},
     is_valid_id,
     MaybeReference,
     ParseNodeError,
-    property::{Property, PropertyContent, FromProperty},
+    property::{Property, Properties},
     ReadOptions,
 };
 
@@ -55,7 +55,7 @@ pub use thumbnail::*;
 /// Any public field or function of [`ImageBase`] is transparently accessible from
 /// [`Image`]s or [`Thumbnail`]s through the use of [`Deref`] coercion
 #[derive(Clone, Debug)]
-pub struct ImageBase {
+struct ImageBase {
     data_block: DataBlock,
     geometry: Vec<usize>,
     sample_format: SampleFormat,
@@ -68,8 +68,8 @@ pub struct ImageBase {
     id: Option<String>,
     uuid: Option<Uuid>,
 
-    properties: HashMap<String, PropertyContent>,
-    fits_header: ListOrderedMultimap<String, FitsKeyContent>,
+    properties: Properties,
+    fits_keys: FitsKeys,
     icc_profile: Option<ICCProfile>,
     rgb_working_space: Option<RGBWorkingSpace>,
     display_function: Option<DisplayFunction>,
@@ -248,65 +248,14 @@ impl ImageBase {
         Ok(buf)
     }
 
-    /// Returns true iff an XISF property is present with the given ID
-    pub fn has_property(&self, id: impl AsRef<str>) -> bool {
-        self.properties.contains_key(id.as_ref())
+    /// Returns a container of all the image's XISF properties
+    pub fn properties(&self) -> &Properties {
+        &self.properties
     }
 
-    /// Attempts to parse an XISF property with the given ID as type T
-    ///
-    /// To read a value and comment pair, use the pattern `let (value, comment) = properties.parse_property("ID", &xisf)?;`
-    pub fn parse_property<T: FromProperty>(&self, id: impl AsRef<str>, ctx: &Context) -> Result<T, ReadPropertyError> {
-        let content = self.properties.get(id.as_ref())
-            .ok_or(report!(ReadPropertyError::NotFound))?;
-        T::from_property(&content, ctx)
-            .change_context(ReadPropertyError::InvalidFormat)
-    }
-    /// Returns the raw content of the XISF property matching the given ID`
-    pub fn raw_property(&self, id: impl AsRef<str>) -> Option<&PropertyContent> {
-        self.properties.get(id.as_ref())
-    }
-    /// Iterates through all XISF properties as (id, type+value+comment) tuples,
-    /// in the order they appear in file, returned as raw unparsed strings/data blocks.
-    pub fn all_raw_properties(&self) -> impl Iterator<Item = (&String, &PropertyContent)> {
-        self.properties.iter()
-    }
-
-    /// Returns true iff the given FITS key is present in the header
-    pub fn has_fits_key(&self, name: impl AsRef<str>) -> bool {
-        self.fits_header.get(name.as_ref()).is_some()
-    }
-    /// Attempts to parse a FITS key with the given name as type `T`, following the syntax laid out in
-    /// [section 4.1](https://fits.gsfc.nasa.gov/standard40/fits_standard40aa-le.pdf#subsection.4.1) of the FITS specification.
-    /// If there is more than one key present with the given name, only the first one is returned.
-    pub fn parse_fits_key<T: FromFitsKey>(&self, name: impl AsRef<str>) -> Result<T, ReadFitsKeyError> {
-        let content = self.fits_header.get(name.as_ref())
-            .ok_or(report!(ReadFitsKeyError::NotFound))?;
-        T::from_fits_key(content)
-            .change_context(ReadFitsKeyError::InvalidFormat)
-    }
-    /// Returns an iterator over all values in the FITS header matching the given name.
-    /// Each key is attempted to be parsed as type `T`, following the syntax laid out in
-    /// [section 4.1](https://fits.gsfc.nasa.gov/standard40/fits_standard40aa-le.pdf#subsection.4.1) of the FITS specification.
-    pub fn parse_fits_keys<T: FromFitsKey>(&self, name: impl AsRef<str>) -> impl Iterator<Item = Result<T, ParseValueError>> + '_ {
-        self.fits_header.get_all(name.as_ref())
-            .map(|content| T::from_fits_key(content))
-    }
-    /// Returns the raw string (both value and comment) of the FITS key matching the given name
-    /// As of the time of writing, this is the only way to get comments from the FITS header
-    pub fn raw_fits_key(&self, name: impl AsRef<str>) -> Option<&FitsKeyContent> {
-        self.fits_header.get(name.as_ref())
-    }
-    /// Returns an iterator over all values (and comments) of keys in the FITS header matching the given name.
-    /// Although most keys are only allowed to appear once in a header, this is especially useful for the HISTORY keyword,
-    /// which is typically appended each time the image is processed in some way
-    pub fn raw_fits_keys(&self, name: impl AsRef<str>) -> impl Iterator<Item = &FitsKeyContent> {
-        self.fits_header.get_all(name.as_ref())
-    }
-    /// Iterates through all FITS keys as (key, value+comment) tuples,
-    /// in the order they appear in file, returned as raw unparsed strings.
-    pub fn all_raw_fits_keys(&self) -> impl Iterator<Item = (&String, &FitsKeyContent)> {
-        self.fits_header.iter()
+    /// Returns a container of all the image's FITS keys
+    pub fn fits_keys(&self) -> &FitsKeys {
+        &self.fits_keys
     }
 
     /// Returns a reference to the embedded ICC profile, if one exists.
@@ -341,7 +290,7 @@ impl ImageBase {
 
 ///
 ///
-/// XISF images may have an arbitrary number of dimensions and
+/// XISF images may have an arbitrary nonzero number of dimensions and channels
 #[derive(Clone, Debug)]
 pub struct Image {
     base: ImageBase,
@@ -498,7 +447,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
     }
 
     let mut properties = HashMap::new();
-    let mut fits_header = ListOrderedMultimap::new();
+    let mut fits_keys = ListOrderedMultimap::new();
     let mut icc_profile = None;
     let mut rgb_working_space = None;
     let mut display_function = None;
@@ -538,7 +487,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
             }
             "FITSKeyword" if opts.import_fits_keywords => {
                 let key = FitsKeyword::parse_node(child)?;
-                fits_header.append(key.name, key.content);
+                fits_keys.append(key.name, key.content);
                 // TODO: respect fits_keywords_as_properties option
             },
             "ICCProfile" => parse_optional!(ICCProfile, icc_profile),
@@ -564,8 +513,13 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
             ));
     }
 
-    if color_filter_array.is_some() && geometry.len() - 1 != 2 {
-        tracing::warn!("ColorFilterArray element only has a defined meaning for 2D images; found one on a {}D image", geometry.len() - 1);
+    if color_filter_array.is_some() {
+        if geometry.len() - 1 != 2 {
+            tracing::warn!("ColorFilterArray element only has a defined meaning for 2D images; found one on a {}D image", geometry.len() - 1);
+        }
+        if color_space != ColorSpace::Gray {
+            tracing::warn!("ColorFilterArray elements are intended for use on raw (mosaiced grayscale) images; found one on a image using the {} color space", color_space);
+        }
     }
 
     Ok(Image {
@@ -582,8 +536,8 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
             id,
             uuid,
 
-            properties,
-            fits_header,
+            properties: Properties::new(properties),
+            fits_keys: FitsKeys::new(fits_keys),
             icc_profile,
             rgb_working_space,
             display_function,
@@ -603,17 +557,75 @@ impl ParseImage for Image {
     const TAG_NAME: &'static str = "Image";
 }
 
-impl Deref for Image {
-    type Target = ImageBase;
-
-    fn deref(&self) -> &Self::Target {
-        &self.base
-    }
-}
-
 impl Image {
     pub(crate) fn parse_node(node: RoNode, xpath: &XpathContext, opts: &ReadOptions) -> Result<Self, ParseNodeError> {
         parse_image::<Self>(node, xpath, opts)
+    }
+
+    delegate::delegate! {
+        to self.base {
+            /// The number of dimensions in this image
+            ///
+            /// The channel axis is not considered a dimension
+            pub fn num_dimensions(&self) -> usize;
+            /// A slice of dimension sizes, in row-major order
+            ///
+            /// For a 2D image, this means height is before width.
+            /// The channel axis is not considered a dimension.
+            pub fn dimensions(&self) -> &[usize];
+            /// The total number of channels in this image, both color and alpha
+            pub fn num_channels(&self) -> usize;
+            /// Called nominal channels in the spec, this is the number of channels required to represent
+            /// all components of the image's color space (1 for grayscale, 3 for RGB or L\*a\*b\*)
+            pub fn num_color_channels(&self) -> usize;
+            /// Any channel after what's needed for the image's color space (1 for grayscale, 3 for RGB or L\*a\*b\*) is considered an alpha channel
+            pub fn num_alpha_channels(&self) -> usize;
+            /// Returns the sample format
+            pub fn sample_format(&self) -> SampleFormat;
+            /// Returns the image type (bias, dark, flat, light, etc)
+            pub fn image_type(&self) -> Option<ImageType>;
+            /// Returns the pixel sample's layout in memory
+            pub fn pixel_layout(&self) -> PixelStorage;
+            /// Returns the color space
+            pub fn color_space(&self) -> ColorSpace;
+            /// Returns the offset (AKA pedestal)
+            ///
+            /// An offset is a value added to all pixel samples, sometimes necessary to
+            /// ensure positive data from the sensor in the presence of noise
+            pub fn offset(&self) -> f64;
+            /// Returns a simple transformation (90-degree rotations and an a reflection) which should be applied before the image is displayed
+            pub fn orientation(&self) -> Option<Orientation>;
+            /// Returns the ID, if one exists
+            ///
+            /// An ID is a sequence of ASCII characters that may be used to identify the image to the end user,
+            /// and could be thought of as a name tag. Must satisfy the regex `[_a-zA-Z][_a-zA-Z0-9]*`.
+            pub fn id(&self) -> Option<&str>;
+            /// Returns the UUID, if one exists
+            pub fn uuid(&self) -> Option<Uuid>;
+            /// Reads data from the image's [data block](DataBlock) and packs it into an image type
+            pub fn read_data(&self, ctx: &Context) -> Result<DynImageData, ReadDataBlockError>;
+            /// Returns a container of all the image's XISF properties
+            pub fn properties(&self) -> &Properties;
+            /// Returns a container of all the image's FITS keys
+            pub fn fits_keys(&self) -> &FitsKeys;
+            /// Returns a reference to the embedded ICC profile, if one exists.
+            /// If the returned value is `Some`, obtain the profile data by calling `read_data()` on the contained value.
+            /// Note: `read_data()` just returns a `Vec<u8>`; consider the `lcms2` crate if you need to actually decode it.
+            pub fn icc_profile(&self) -> Option<&ICCProfile>;
+            /// Returns a reference to the RGB working space, if one is specified.
+            /// If none is specified, the default is the sRGB color space, relative to the D50 standard illuminant.
+            /// Consider using [`Option::unwrap_or_default()`] on the result.
+            pub fn rgb_working_space(&self) -> Option<&RGBWorkingSpace>;
+            /// Returns a reference to the display function, if one is specified.
+            /// If none is specified, the default is the identity function.
+            /// Although the identity display function is the [`Default`], using [`Option::unwrap_or_default()`] on the result
+            /// would likely be unwise for most cases, as applying the identity function would result in unnecessary computation.
+            pub fn display_function(&self) -> Option<&DisplayFunction>;
+            /// Returns the pixel density of this image, in pixels-per-inch or pixels-per-centimeter
+            /// If none is specified, the default is 72 PPI.
+            /// Consider using [`Option::unwrap_or_default()`] on the result
+            pub fn pixel_density(&self) -> Option<&Resolution>;
+        }
     }
 
     /// The minimum and maximum value for a pixel sample in this image.

@@ -35,7 +35,7 @@ use std::{
 };
 
 pub mod error;
-use error::{ParseNodeError, ParseNodeErrorKind::{self, *}, ReadFileError, ReadPropertyError};
+use error::{ParseNodeError, ParseNodeErrorKind::{self, *}, ReadFileError};
 
 pub mod data_block;
 use data_block::{ChecksumAlgorithm, CompressionAlgorithm, CompressionLevel, Context};
@@ -56,7 +56,7 @@ use metadata::Metadata;
 ///
 /// # Example
 ///
-/// ```rust
+/// ```
 /// # use xisf_rs::ReadOptions;
 /// let opts = ReadOptions::new()
 ///     .import_fits_keywords(false)
@@ -112,7 +112,7 @@ impl Default for ReadOptions {
 ///
 /// # Example
 ///
-/// ```rust
+/// ```
 /// # use xisf_rs::WriteOptions;
 /// # use xisf_rs::data_block::{ChecksumAlgorithm, CompressionAlgorithm, CompressionLevel};
 /// let opts = WriteOptions::new("My Awesome Astronomy Program")
@@ -213,7 +213,7 @@ const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
 #[derive(Clone, Debug)]
 pub struct XISF {
     images: Vec<Image>,
-    properties: HashMap<String, PropertyContent>,
+    properties: Properties,
     metadata: Metadata,
 }
 impl XISF {
@@ -401,7 +401,7 @@ impl XISF {
 
         Ok(XISF {
             images,
-            properties,
+            properties: Properties::new(properties),
             metadata,
         })
     }
@@ -429,51 +429,17 @@ impl XISF {
         &self.images[i]
     }
 
-    /// Returns true iff an XISF property is present with the given ID
-    pub fn has_property(&self, id: impl AsRef<str>) -> bool {
-        self.properties.contains_key(id.as_ref())
-    }
-
-    /// Attempts to parse an XISF property with the given ID as type T
+    /// Returns a collection of all properties which were applied directly to the XISF root element (this is uncommon, but allowed)
     ///
-    /// To read a value and comment pair, use the pattern `let (value, comment) = properties.parse_property("ID", &xisf)?;`
-    pub fn parse_property<T: FromProperty>(&self, id: impl AsRef<str>, ctx: &Context) -> Result<T, ReadPropertyError> {
-        let content = self.properties.get(id.as_ref())
-            .ok_or(report!(ReadPropertyError::NotFound))?;
-        T::from_property(&content, ctx)
-            .change_context(ReadPropertyError::InvalidFormat)
-    }
-    /// Returns the raw content of the XISF property matching the given ID`
-    pub fn raw_property(&self, id: impl AsRef<str>) -> Option<&PropertyContent> {
-        self.properties.get(id.as_ref())
-    }
-    /// Iterates through all XISF properties as (id, type+value+comment) tuples,
-    /// in the order they appear in file, returned as raw unparsed strings/data blocks.
-    pub fn all_raw_properties(&self) -> impl Iterator<Item = (&String, &PropertyContent)> {
-        self.properties.iter()
+    /// Images have their own set of properties;
+    pub fn properties(&self) -> &Properties {
+        &self.properties
     }
 
-    /// Returns true iff the Metadata element contains an XISF property with the given ID
-    pub fn has_metadata(&self, id: impl AsRef<str>) -> bool {
-        self.metadata.contains_key(id.as_ref())
-    }
-
-    /// Attempts to parse an XISF property from the Metadata element with the given ID as type T
-    ///
-    /// To read a value and comment pair, use the pattern `let (value, comment) = properties.parse_property("ID", &xisf)?;`
-    pub fn parse_metadata<T: FromProperty>(&self, id: impl AsRef<str>, ctx: &Context) -> Result<T, ReadPropertyError> {
-        let content = self.metadata.get(id.as_ref())
-            .ok_or(report!(ReadPropertyError::NotFound))?;
-        T::from_property(&content, ctx)
-            .change_context(ReadPropertyError::InvalidFormat)
-    }
-    /// Returns the raw content of the XISF property in the Metadata element matching the given ID`
-    pub fn raw_metadata(&self, id: impl AsRef<str>) -> Option<&PropertyContent> {
-        self.metadata.get(id.as_ref())
-    }
-    /// Iterates through all XISF properties as (id, type+value+comment) tuples,
-    /// in the order they appear in file, returned as raw unparsed strings/data blocks.
-    pub fn all_raw_metadata(&self) -> impl Iterator<Item = (&String, &PropertyContent)> {
-        self.metadata.iter()
+    /// Returns a collection of all [metadata properties](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#__XISF_Core_Elements_:_Metadata_Core_Element_:_Mandatory_Metadata_Properties__)
+    /// present in the file
+    // TODO: distinguish properties() and metadata()
+    pub fn metadata(&self) -> &Properties {
+        &self.metadata.0
     }
 }
