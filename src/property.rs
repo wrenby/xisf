@@ -1,6 +1,5 @@
 //! XISF property parsing
 //!
-//!
 //! [Images](crate::image::Image) and [XISF root elements](crate::XISF) may have an arbitrary number of
 //! "XISF properties": an association of a locally-unique ID with a type, value, format specifier, and comment.
 //! Format specifiers are currently not supported.
@@ -117,6 +116,7 @@ impl NumericType {
     }
 }
 
+
 /// What data type the property expects to be parsed into
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum PropertyType {
@@ -129,9 +129,21 @@ pub enum PropertyType {
     /// A date + time + UTC offset, conforming to ISO-8601
     TimePoint,
     /// A vector (1D array) of numbers
-    Vector(NumericType),
-    /// M matrix (2D array) of numbers
-    Matrix(NumericType),
+    Vector {
+        /// The type of number contained in the vector
+        r#type: NumericType,
+        /// The dimensionality / number of elements in the vector
+        len: usize
+    },
+    /// A matrix (2D array) of numbers
+    Matrix {
+        /// The type of number contained in the matrix
+        r#type: NumericType,
+        /// The number of rows in the matrix
+        rows: usize,
+        /// The number of columns in the matrix
+        columns: usize
+    },
 }
 impl Display for PropertyType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -140,12 +152,22 @@ impl Display for PropertyType {
             Self::Number(n) => n.fmt(f),
             Self::String => f.write_str("String"),
             Self::TimePoint => f.write_str("TimePoint"),
-            Self::Vector(n) => f.write_fmt(format_args!("{}Vector", n.prefix())),
-            Self::Matrix(n) => f.write_fmt(format_args!("{}Matrix", n.prefix())),
+            Self::Vector { r#type, .. } => f.write_fmt(format_args!("{}Vector", r#type.prefix())),
+            Self::Matrix { r#type, .. } => f.write_fmt(format_args!("{}Matrix", r#type.prefix())),
         }
     }
 }
-impl FromStr for PropertyType {
+
+#[derive(PartialEq)]
+enum PropertyTypeAttr {
+    Boolean,
+    Number(NumericType),
+    String,
+    TimePoint,
+    Vector(NumericType),
+    Matrix(NumericType),
+}
+impl FromStr for PropertyTypeAttr {
     type Err = Report<ParseValueError>;
 
     fn from_str(s: &str) -> Result<Self, ParseValueError> {
@@ -186,7 +208,7 @@ impl FromStr for PropertyType {
             "F64Vector" | "Vector" => Ok(Self::Vector(NumericType::Float64)),
             "F128Vector" => Ok(Self::Vector(NumericType::Float128)),
             "C32Vector" => Ok(Self::Vector(NumericType::Complex32)),
-            "C6Vector" => Ok(Self::Vector(NumericType::Complex64)),
+            "C64Vector" => Ok(Self::Vector(NumericType::Complex64)),
             "C128Vector" => Ok(Self::Vector(NumericType::Complex128)),
 
             "I8Matrix" => Ok(Self::Matrix(NumericType::Int8)),
@@ -203,17 +225,16 @@ impl FromStr for PropertyType {
             "F64Matrix" | "Matrix" => Ok(Self::Matrix(NumericType::Float64)),
             "F128Matrix" => Ok(Self::Matrix(NumericType::Float128)),
             "C32Matrix" => Ok(Self::Matrix(NumericType::Complex32)),
-            "C6Matrix" => Ok(Self::Matrix(NumericType::Complex64)),
+            "C64Matrix" => Ok(Self::Matrix(NumericType::Complex64)),
             "C128Matrix" => Ok(Self::Matrix(NumericType::Complex128)),
 
-            bad => Err(ParseValueError("PropertyType"))
+            bad => Err(ParseValueError("XISF Property Type"))
                 .attach_printable(format!("Invalid type: {bad}"))
         }
     }
-//
 }
-impl PropertyType {
-    pub(crate) fn requires_data_block(&self) -> bool {
+impl PropertyTypeAttr {
+    pub(crate) fn vector_or_matrix(&self) -> bool {
         match self {
             Self::Matrix(_) | Self::Vector(_) => true,
             _ => false,
@@ -251,10 +272,10 @@ impl Property {
             }
         }
 
-        let r#type = attrs.remove("type")
+        let type_attr = attrs.remove("type")
             .ok_or(context(MissingAttr))
             .attach_printable("Missing type attribute")?
-            .parse::<PropertyType>()
+            .parse::<PropertyTypeAttr>()
             .change_context(context(InvalidAttr))
             .attach_printable("Failed to parse type attribute")?;
 
@@ -279,7 +300,9 @@ impl Property {
             };
         }
 
-        if r#type == PropertyType::String {
+        // TODO: refactor into match statement
+        if type_attr == PropertyTypeAttr::String {
+            let r#type = PropertyType::String;
             // string properties can either be in a data block or a child text node
             if let Some(block) = data_block {
                 warn_remaining!(attrs, children);
@@ -308,7 +331,47 @@ impl Property {
                     _other => Err(report(InvalidChild)).attach_printable("String properties are not permitted to have non-text child nodes"),
                 }
             }
-        } else if r#type.requires_data_block() {
+        } else if type_attr.vector_or_matrix() {
+            let r#type = match type_attr {
+                PropertyTypeAttr::Vector(inner) => {
+                    let len = attrs.remove("length")
+                        .ok_or(context(MissingAttr))
+                        .attach_printable("Missing length attribute")?
+                        .trim()
+                        .parse::<usize>()
+                        .change_context(context(InvalidAttr))
+                        .attach_printable("Failed to parse length attribute")?;
+
+                    PropertyType::Vector {
+                        r#type: inner,
+                        len,
+                    }
+                },
+                PropertyTypeAttr::Matrix(inner) => {
+                    let rows = attrs.remove("rows")
+                        .ok_or(context(MissingAttr))
+                        .attach_printable("Missing rows attribute")?
+                        .trim()
+                        .parse::<usize>()
+                        .change_context(context(InvalidAttr))
+                        .attach_printable("Failed to parse rows attribute")?;
+
+                    let columns = attrs.remove("columns")
+                        .ok_or(context(MissingAttr))
+                        .attach_printable("Missing columns attribute")?
+                        .trim()
+                        .parse::<usize>()
+                        .change_context(context(InvalidAttr))
+                        .attach_printable("Failed to parse columns attribute")?;
+
+                    PropertyType::Matrix {
+                        r#type: inner,
+                        rows,
+                        columns,
+                    }
+                },
+                _ => unreachable!()
+            };
             if let Some(block) = data_block {
                 warn_remaining!(attrs, children);
                 Ok(Self {
@@ -323,6 +386,12 @@ impl Property {
                 Err(context(InvalidAttr)).attach_printable(format!("Properties of type {} must have a data block", r#type))
             }
         } else {
+            let r#type = match type_attr {
+                PropertyTypeAttr::Boolean => PropertyType::Boolean,
+                PropertyTypeAttr::Number(inner) => PropertyType::Number(inner),
+                PropertyTypeAttr::TimePoint => PropertyType::TimePoint,
+                _ => unreachable!()
+            };
             if data_block.is_none() {
                 if let Some(val) = attrs.remove("value") {
                     warn_remaining!(attrs, children);
