@@ -233,14 +233,6 @@ impl FromStr for PropertyTypeAttr {
         }
     }
 }
-impl PropertyTypeAttr {
-    pub(crate) fn vector_or_matrix(&self) -> bool {
-        match self {
-            Self::Matrix(_) | Self::Vector(_) => true,
-            _ => false,
-        }
-    }
-}
 
 fn report(kind: ParseNodeErrorKind) -> Report<ParseNodeError> {
     report!(context(kind))
@@ -285,7 +277,6 @@ impl Property {
 
         let data_block = DataBlock::parse_node(node, "Property", &mut attrs)?;
 
-        //
         macro_rules! warn_remaining {
             (attrs) => {
                 for remaining in attrs.into_iter() {
@@ -300,117 +291,130 @@ impl Property {
             };
         }
 
-        // TODO: refactor into match statement
-        if type_attr == PropertyTypeAttr::String {
-            let r#type = PropertyType::String;
-            // string properties can either be in a data block or a child text node
-            if let Some(block) = data_block {
-                warn_remaining!(attrs, children);
-                Ok(Self {
-                    id,
-                    content: PropertyContent {
-                        r#type,
-                        value: PropertyValue::DataBlock(block),
-                        comment,
-                    }
-                })
-            } else {
-                match children.as_slice() {
-                    [] => Err(report(MissingChild)).attach_printable("Missing child text node: required for inline data blocks"),
-                    [text] if text.get_type() == Some(NodeType::TextNode) => {
-                        warn_remaining!(attrs);
-                        Ok(Self {
-                            id,
-                            content: PropertyContent {
-                                r#type,
-                                value: PropertyValue::Plaintext(text.get_content()),
-                                comment,
-                            },
-                        })
-                    },
-                    _other => Err(report(InvalidChild)).attach_printable("String properties are not permitted to have non-text child nodes"),
-                }
-            }
-        } else if type_attr.vector_or_matrix() {
-            let r#type = match type_attr {
-                PropertyTypeAttr::Vector(inner) => {
-                    let len = attrs.remove("length")
-                        .ok_or(context(MissingAttr))
-                        .attach_printable("Missing length attribute")?
-                        .trim()
-                        .parse::<usize>()
-                        .change_context(context(InvalidAttr))
-                        .attach_printable("Failed to parse length attribute")?;
-
-                    PropertyType::Vector {
-                        r#type: inner,
-                        len,
-                    }
-                },
-                PropertyTypeAttr::Matrix(inner) => {
-                    let rows = attrs.remove("rows")
-                        .ok_or(context(MissingAttr))
-                        .attach_printable("Missing rows attribute")?
-                        .trim()
-                        .parse::<usize>()
-                        .change_context(context(InvalidAttr))
-                        .attach_printable("Failed to parse rows attribute")?;
-
-                    let columns = attrs.remove("columns")
-                        .ok_or(context(MissingAttr))
-                        .attach_printable("Missing columns attribute")?
-                        .trim()
-                        .parse::<usize>()
-                        .change_context(context(InvalidAttr))
-                        .attach_printable("Failed to parse columns attribute")?;
-
-                    PropertyType::Matrix {
-                        r#type: inner,
-                        rows,
-                        columns,
-                    }
-                },
-                _ => unreachable!()
-            };
-            if let Some(block) = data_block {
-                warn_remaining!(attrs, children);
-                Ok(Self {
-                    id,
-                    content: PropertyContent {
-                        r#type,
-                        value: PropertyValue::DataBlock(block),
-                        comment,
-                    }
-                })
-            } else {
-                Err(context(InvalidAttr)).attach_printable(format!("Properties of type {} must have a data block", r#type))
-            }
-        } else {
-            let r#type = match type_attr {
-                PropertyTypeAttr::Boolean => PropertyType::Boolean,
-                PropertyTypeAttr::Number(inner) => PropertyType::Number(inner),
-                PropertyTypeAttr::TimePoint => PropertyType::TimePoint,
-                _ => unreachable!()
-            };
-            if data_block.is_none() {
-                if let Some(val) = attrs.remove("value") {
+        match type_attr {
+            PropertyTypeAttr::String => {
+                let r#type = PropertyType::String;
+                // string properties can either be in a data block or a child text node
+                if let Some(block) = data_block {
                     warn_remaining!(attrs, children);
                     Ok(Self {
                         id,
                         content: PropertyContent {
                             r#type,
-                            value: PropertyValue::Plaintext(val),
+                            value: PropertyValue::DataBlock(block),
                             comment,
                         }
                     })
                 } else {
-                    Err(context(MissingAttr)).attach_printable(format!("Missing value attribute"))
+                    match children.as_slice() {
+                        [] => Err(report(MissingChild)).attach_printable("Missing child text node: required for inline data blocks"),
+                        [text] if text.get_type() == Some(NodeType::TextNode) => {
+                            warn_remaining!(attrs);
+                            Ok(Self {
+                                id,
+                                content: PropertyContent {
+                                    r#type,
+                                    value: PropertyValue::Plaintext(text.get_content()),
+                                    comment,
+                                },
+                            })
+                        },
+                        _other => Err(report(InvalidChild)).attach_printable("String properties are not permitted to have non-text child nodes"),
+                    }
                 }
-            } else {
-                Err(context(InvalidAttr)).attach_printable(format!("Properties of type {} cannot have a data block", r#type))
+            },
+            PropertyTypeAttr::Vector(r#type) => {
+                let len = attrs.remove("length")
+                    .ok_or(context(MissingAttr))
+                    .attach_printable("Missing length attribute")?
+                    .trim()
+                    .parse::<usize>()
+                    .change_context(context(InvalidAttr))
+                    .attach_printable("Failed to parse length attribute")?;
+
+                let r#type = PropertyType::Vector {
+                    r#type,
+                    len,
+                };
+
+                if let Some(block) = data_block {
+                    warn_remaining!(attrs, children);
+                    Ok(Self {
+                        id,
+                        content: PropertyContent {
+                            r#type,
+                            value: PropertyValue::DataBlock(block),
+                            comment,
+                        }
+                    })
+                } else {
+                    Err(context(InvalidAttr)).attach_printable("Vector properties must have a data block")
+                }
+            },
+            PropertyTypeAttr::Matrix(r#type) => {
+                let rows = attrs.remove("rows")
+                    .ok_or(context(MissingAttr))
+                    .attach_printable("Missing rows attribute")?
+                    .trim()
+                    .parse::<usize>()
+                    .change_context(context(InvalidAttr))
+                    .attach_printable("Failed to parse rows attribute")?;
+
+                let columns = attrs.remove("columns")
+                    .ok_or(context(MissingAttr))
+                    .attach_printable("Missing columns attribute")?
+                    .trim()
+                    .parse::<usize>()
+                    .change_context(context(InvalidAttr))
+                    .attach_printable("Failed to parse columns attribute")?;
+
+                let r#type = PropertyType::Matrix {
+                    r#type,
+                    rows,
+                    columns,
+                };
+
+
+                if let Some(block) = data_block {
+                    warn_remaining!(attrs, children);
+                    Ok(Self {
+                        id,
+                        content: PropertyContent {
+                            r#type,
+                            value: PropertyValue::DataBlock(block),
+                            comment,
+                        }
+                    })
+                } else {
+                    Err(context(InvalidAttr)).attach_printable("Matrix properties must have a data block")
+                }
+            },
+            PropertyTypeAttr::Boolean | PropertyTypeAttr::Number(_) | PropertyTypeAttr::TimePoint => {
+                let r#type = match type_attr {
+                    PropertyTypeAttr::Boolean => PropertyType::Boolean,
+                    PropertyTypeAttr::Number(inner) => PropertyType::Number(inner),
+                    PropertyTypeAttr::TimePoint => PropertyType::TimePoint,
+                    _ => unreachable!()
+                };
+                if data_block.is_none() {
+                    if let Some(val) = attrs.remove("value") {
+                        warn_remaining!(attrs, children);
+                        Ok(Self {
+                            id,
+                            content: PropertyContent {
+                                r#type,
+                                value: PropertyValue::Plaintext(val),
+                                comment,
+                            }
+                        })
+                    } else {
+                        Err(context(MissingAttr)).attach_printable(format!("Missing value attribute"))
+                    }
+                } else {
+                    Err(context(InvalidAttr)).attach_printable(format!("Properties of type {} cannot have a data block", r#type))
+                }
             }
         }
-
     }
 }
 
@@ -475,7 +479,7 @@ impl FromProperty for bool {
     }
 }
 
-macro_rules! from_property_scalar {
+macro_rules! from_property_scalar_impl {
     ($variant:ident, $t:ty) => {
         impl FromProperty for $t {
             fn from_property(prop: &PropertyContent, _ctx: &Context) -> Result<Self, ParseValueError> {
@@ -495,21 +499,21 @@ macro_rules! from_property_scalar {
     }
 }
 
-from_property_scalar!(Int8, i8);
-from_property_scalar!(UInt8, u8);
-from_property_scalar!(Int16, i16);
-from_property_scalar!(UInt16, u16);
-from_property_scalar!(Int32, i32);
-from_property_scalar!(UInt32, u32);
-from_property_scalar!(Int64, i64);
-from_property_scalar!(UInt64, u64);
-from_property_scalar!(Int128, i128);
-from_property_scalar!(UInt128, u128);
-from_property_scalar!(Float32, f32);
-from_property_scalar!(Float64, f64);
-// TODO: from_property_scalar!(Float128, f128)
+from_property_scalar_impl!(Int8, i8);
+from_property_scalar_impl!(UInt8, u8);
+from_property_scalar_impl!(Int16, i16);
+from_property_scalar_impl!(UInt16, u16);
+from_property_scalar_impl!(Int32, i32);
+from_property_scalar_impl!(UInt32, u32);
+from_property_scalar_impl!(Int64, i64);
+from_property_scalar_impl!(UInt64, u64);
+from_property_scalar_impl!(Int128, i128);
+from_property_scalar_impl!(UInt128, u128);
+from_property_scalar_impl!(Float32, f32);
+from_property_scalar_impl!(Float64, f64);
+// TODO: from_property_scalar_impl!(Float128, f128)
 
-macro_rules! from_property_complex {
+macro_rules! from_property_complex_impl {
     ($variant:ident, $t:ty) => {
         impl FromProperty for Complex<$t> {
             fn from_property(prop: &PropertyContent, _ctx: &Context) -> Result<Self, ParseValueError> {
@@ -545,9 +549,9 @@ macro_rules! from_property_complex {
     }
 }
 
-from_property_complex!(Complex32, f32);
-from_property_complex!(Complex64, f64);
-// TODO: from_property_complex!(Complex64, f128);
+from_property_complex_impl!(Complex32, f32);
+from_property_complex_impl!(Complex64, f64);
+// TODO: from_property_complex_impl!(Complex64, f128);
 
 impl FromProperty for String {
     fn from_property(prop: &PropertyContent, ctx: &Context) -> Result<Self, ParseValueError> {
@@ -582,7 +586,7 @@ impl FromProperty for OffsetDateTime {
                 Ok(OffsetDateTime::parse(text.trim(), &Iso8601::PARSING)
                     .change_context(CONTEXT)?)
             } else {
-                Err(report!(CONTEXT)).attach_printable("Scalar properties cannot be serialized as a data block")
+                Err(report!(CONTEXT)).attach_printable("OffsetDateTime properties cannot be serialized as a data block")
             }
         } else {
             Err(report!(CONTEXT))
@@ -590,6 +594,160 @@ impl FromProperty for OffsetDateTime {
         }
     }
 }
+
+macro_rules! byteorder_block {
+    ($block:ident, $v:ident,) => {};
+    ($block:ident, $v:ident, $byteorder_fn:ident) => {
+        match $block.byte_order {
+            crate::data_block::ByteOrder::Big => <byteorder::BE as byteorder::ByteOrder>::$byteorder_fn(&mut $v),
+            crate::data_block::ByteOrder::Little => <byteorder::LE as byteorder::ByteOrder>::$byteorder_fn(&mut $v),
+        }
+    };
+}
+
+macro_rules! complex_block {
+    ($v:ident, $context:ident,) => {};
+    ($v:ident, $context:ident, $complex:ty) => {
+        let $v: Vec<Complex<$complex>> = bytemuck::allocation::try_cast_vec($v)
+            .map_err(|(e, _)| e) // returns a tuple error that stops change_context from working
+            .change_context($context)?;
+    };
+}
+
+macro_rules! from_property_vector_fn {
+    ($variant:ident, $t:ty $(as Complex<$complex_t:ty>)?, $($byteorder_fn:ident)?) => {
+        fn from_property(prop: &PropertyContent, ctx: &Context) -> Result<Self, ParseValueError> {
+            const CONTEXT: ParseValueError = ParseValueError(concat!("XISF Property key as vector of ", stringify!($t)));
+            if let PropertyType::Vector { r#type: NumericType::$variant, len } = prop.r#type {
+                if let PropertyValue::DataBlock(block) = &prop.value {
+                    block.verify_checksum(ctx)
+                        .change_context(CONTEXT)?;
+                    let mut reader = block.decompressed_bytes(ctx)
+                        .change_context(CONTEXT)?;
+
+                    let mut bytes = vec![0; len];
+                    reader.read_exact(&mut bytes)
+                        .change_context(CONTEXT)?;
+
+                    // only needs to be mut when type has a concept of endian-ness -- will complain for i8 and u8
+                    #[allow(unused_mut)]
+                    let mut v: Vec<$t> = bytemuck::allocation::try_cast_vec(bytes)
+                        .map_err(|(e, _)| e) // returns a tuple error that stops change_context from working
+                        .change_context(CONTEXT)?;
+
+                    byteorder_block!(block, v, $($byteorder_fn)?);
+                    complex_block!(v, CONTEXT, $($complex_t)?);
+
+                    Ok(v)
+                } else {
+                    Err(report!(CONTEXT)).attach_printable("Vector properties must be serialized as a data block")
+                }
+            } else {
+                Err(report!(CONTEXT))
+                    .attach_printable(format!("Incorrect property type: found {}", prop.r#type))
+            }
+        }
+    }
+}
+
+macro_rules! from_property_vector_impl {
+    ($variant:ident, Complex<$t:ty> $(, $byteorder_fn:ident)?) => {
+        impl FromProperty for Vec<Complex<$t>> {
+            from_property_vector_fn!($variant, $t as Complex<$t>, $($byteorder_fn)?);
+        }
+    };
+    ($variant:ident, $t:ty $(, $byteorder_fn:ident)?) => {
+        impl FromProperty for Vec<$t> {
+            from_property_vector_fn!($variant, $t, $($byteorder_fn)?);
+        }
+    };
+}
+
+from_property_vector_impl!(Int8, i8);
+from_property_vector_impl!(UInt8, u8);
+from_property_vector_impl!(Int16, i16, from_slice_i16);
+from_property_vector_impl!(UInt16, u16, from_slice_u16);
+from_property_vector_impl!(Int32, i32, from_slice_i32);
+from_property_vector_impl!(UInt32, u32, from_slice_u32);
+from_property_vector_impl!(Int64, i64, from_slice_i64);
+from_property_vector_impl!(UInt64, u64, from_slice_u64);
+from_property_vector_impl!(Int128, i128, from_slice_i128);
+from_property_vector_impl!(UInt128, u128, from_slice_u128);
+from_property_vector_impl!(Float32, f32, from_slice_f32);
+from_property_vector_impl!(Float64, f64, from_slice_f64);
+// TODO: from_property_vector_impl!(Float128, f128, from_slice_f128)
+
+from_property_vector_impl!(Complex32, Complex<f32>, from_slice_f32);
+from_property_vector_impl!(Complex64, Complex<f64>, from_slice_f64);
+// TODO: from_property_vector_impl!(Complex64, Complex<f128>, from_slice_f128);
+
+macro_rules! from_property_matrix_fn {
+    ($variant:ident, $t:ty $(as Complex<$complex_t:ty>)?, $($byteorder_fn:ident)?) => {
+        fn from_property(prop: &PropertyContent, ctx: &Context) -> Result<Self, ParseValueError> {
+            const CONTEXT: ParseValueError = ParseValueError(concat!("XISF Property key as vector of ", stringify!($t)));
+            if let PropertyType::Matrix { r#type: NumericType::$variant, rows, columns } = prop.r#type {
+                if let PropertyValue::DataBlock(block) = &prop.value {
+                    block.verify_checksum(ctx)
+                        .change_context(CONTEXT)?;
+                    let mut reader = block.decompressed_bytes(ctx)
+                        .change_context(CONTEXT)?;
+
+                    let mut bytes = vec![0; rows * columns];
+                    reader.read_exact(&mut bytes)
+                        .change_context(CONTEXT)?;
+
+                    // only needs to be mut when type has a concept of endian-ness -- will complain for i8 and u8
+                    #[allow(unused_mut)]
+                    let mut v: Vec<$t> = bytemuck::allocation::try_cast_vec(bytes)
+                        .map_err(|(e, _)| e) // returns a tuple error that stops change_context from working
+                        .change_context(CONTEXT)?;
+
+                    byteorder_block!(block, v, $($byteorder_fn)?);
+                    complex_block!(v, CONTEXT, $($complex_t)?);
+
+                    Self::from_shape_vec((rows, columns), v)
+                        .change_context(CONTEXT)
+                } else {
+                    Err(report!(CONTEXT)).attach_printable("Vector properties must be serialized as a data block")
+                }
+            } else {
+                Err(report!(CONTEXT))
+                    .attach_printable(format!("Incorrect property type: found {}", prop.r#type))
+            }
+        }
+    }
+}
+
+macro_rules! from_property_matrix_impl {
+    ($variant:ident, Complex<$t:ty> $(, $byteorder_fn:ident)?) => {
+        impl FromProperty for ndarray::Array2<Complex<$t>> {
+            from_property_matrix_fn!($variant, $t as Complex<$t>, $($byteorder_fn)?);
+        }
+    };
+    ($variant:ident, $t:ty $(, $byteorder_fn:ident)?) => {
+        impl FromProperty for ndarray::Array2<$t> {
+            from_property_matrix_fn!($variant, $t, $($byteorder_fn)?);
+        }
+    };
+}
+
+from_property_matrix_impl!(Int8, i8);
+from_property_matrix_impl!(UInt8, u8);
+from_property_matrix_impl!(Int16, i16, from_slice_i16);
+from_property_matrix_impl!(UInt16, u16, from_slice_u16);
+from_property_matrix_impl!(Int32, i32, from_slice_i32);
+from_property_matrix_impl!(UInt32, u32, from_slice_u32);
+from_property_matrix_impl!(Int64, i64, from_slice_i64);
+from_property_matrix_impl!(UInt64, u64, from_slice_u64);
+from_property_matrix_impl!(Int128, i128, from_slice_i128);
+from_property_matrix_impl!(UInt128, u128, from_slice_u128);
+from_property_matrix_impl!(Float32, f32, from_slice_f32);
+from_property_matrix_impl!(Float64, f64, from_slice_f64);
+// TODO: from_property_matrix_impl!(Float128, f128, from_slice_f128)
+
+from_property_matrix_impl!(Complex32, Complex<f32>, from_slice_f32);
+from_property_matrix_impl!(Complex64, Complex<f64>, from_slice_f64);
+// TODO: from_property_matrix_impl!(Complex64, Complex<f128>, from_slice_f128);
 
 // TODO: this is recursive
 impl<T: FromProperty> FromProperty for (T, Option<String>) {
