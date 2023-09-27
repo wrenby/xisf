@@ -11,6 +11,8 @@ use libxml::{readonly::RoNode, tree::NodeType};
 use num_complex::Complex;
 use strum::Display;
 use time::{OffsetDateTime, format_description::well_known::Iso8601};
+#[cfg(feature = "f128")]
+use f128::f128;
 
 use crate::{
     data_block::{Context, DataBlock},
@@ -44,9 +46,21 @@ impl Properties {
             .change_context(ReadPropertyError::InvalidFormat)
     }
 
-    /// Returns the raw content of the XISF property matching the given ID`
+    /// Returns the raw content of the XISF property matching the given ID
+    ///
+    /// If no property with the given ID is found, returns `None`
     pub fn raw(&self, id: impl AsRef<str>) -> Option<&PropertyContent> {
         self.0.get(id.as_ref())
+    }
+
+    /// Returns the comment of the XISF property matching the given ID
+    ///
+    /// If no property with the given ID is found or if the property has no comment, returns `None`
+    pub fn comment(&self, id: impl AsRef<str>) -> Option<&str> {
+        match self.raw(id) {
+            Some(PropertyContent { comment: Some(ref c), .. }) => Some(c.as_str()),
+            _ => None,
+        }
     }
 
     /// Iterates through all XISF properties as (id, content) tuples,
@@ -511,7 +525,8 @@ from_property_scalar_impl!(Int128, i128);
 from_property_scalar_impl!(UInt128, u128);
 from_property_scalar_impl!(Float32, f32);
 from_property_scalar_impl!(Float64, f64);
-// TODO: from_property_scalar_impl!(Float128, f128)
+#[cfg(feature = "f128")]
+from_property_scalar_impl!(Float128, f128);
 
 macro_rules! from_property_complex_impl {
     ($variant:ident, $t:ty) => {
@@ -551,7 +566,8 @@ macro_rules! from_property_complex_impl {
 
 from_property_complex_impl!(Complex32, f32);
 from_property_complex_impl!(Complex64, f64);
-// TODO: from_property_complex_impl!(Complex64, f128);
+#[cfg(feature = "f128")]
+from_property_complex_impl!(Complex64, f128);
 
 impl FromProperty for String {
     fn from_property(prop: &PropertyContent, ctx: &Context) -> Result<Self, ParseValueError> {
@@ -596,71 +612,54 @@ impl FromProperty for OffsetDateTime {
 }
 
 macro_rules! byteorder_block {
-    ($block:ident, $v:ident,) => {};
-    ($block:ident, $v:ident, $byteorder_fn:ident) => {
+    ($block:ident, $context:ident, $slice:ident) => {};
+    ($block:ident, $context:ident, $slice:ident, $byteorder_fn:ident) => {
         match $block.byte_order {
-            crate::data_block::ByteOrder::Big => <byteorder::BE as byteorder::ByteOrder>::$byteorder_fn(&mut $v),
-            crate::data_block::ByteOrder::Little => <byteorder::LE as byteorder::ByteOrder>::$byteorder_fn(&mut $v),
+            crate::data_block::ByteOrder::Big => <byteorder::BE as byteorder::ByteOrder>::$byteorder_fn($slice),
+            crate::data_block::ByteOrder::Little => <byteorder::LE as byteorder::ByteOrder>::$byteorder_fn($slice),
         }
     };
-}
-
-macro_rules! complex_block {
-    ($v:ident, $context:ident,) => {};
-    ($v:ident, $context:ident, $complex:ty) => {
-        let $v: Vec<Complex<$complex>> = bytemuck::allocation::try_cast_vec($v)
-            .map_err(|(e, _)| e) // returns a tuple error that stops change_context from working
+    ($block:ident, $context:ident, $slice:ident as $bytemuck:ty, $byteorder_fn:ident) => {
+        let bytemuck: &mut [$bytemuck] = bytemuck::try_cast_slice_mut($slice)
             .change_context($context)?;
+
+        byteorder_block!($block, $context, bytemuck, $byteorder_fn);
     };
-}
-
-macro_rules! from_property_vector_fn {
-    ($variant:ident, $t:ty $(as Complex<$complex_t:ty>)?, $($byteorder_fn:ident)?) => {
-        fn from_property(prop: &PropertyContent, ctx: &Context) -> Result<Self, ParseValueError> {
-            const CONTEXT: ParseValueError = ParseValueError(concat!("XISF Property key as vector of ", stringify!($t)));
-            if let PropertyType::Vector { r#type: NumericType::$variant, len } = prop.r#type {
-                if let PropertyValue::DataBlock(block) = &prop.value {
-                    block.verify_checksum(ctx)
-                        .change_context(CONTEXT)?;
-                    let mut reader = block.decompressed_bytes(ctx)
-                        .change_context(CONTEXT)?;
-
-                    let mut bytes = vec![0; len];
-                    reader.read_exact(&mut bytes)
-                        .change_context(CONTEXT)?;
-
-                    // only needs to be mut when type has a concept of endian-ness -- will complain for i8 and u8
-                    #[allow(unused_mut)]
-                    let mut v: Vec<$t> = bytemuck::allocation::try_cast_vec(bytes)
-                        .map_err(|(e, _)| e) // returns a tuple error that stops change_context from working
-                        .change_context(CONTEXT)?;
-
-                    byteorder_block!(block, v, $($byteorder_fn)?);
-                    complex_block!(v, CONTEXT, $($complex_t)?);
-
-                    Ok(v)
-                } else {
-                    Err(report!(CONTEXT)).attach_printable("Vector properties must be serialized as a data block")
-                }
-            } else {
-                Err(report!(CONTEXT))
-                    .attach_printable(format!("Incorrect property type: found {}", prop.r#type))
-            }
-        }
-    }
 }
 
 macro_rules! from_property_vector_impl {
-    ($variant:ident, Complex<$t:ty> $(, $byteorder_fn:ident)?) => {
-        impl FromProperty for Vec<Complex<$t>> {
-            from_property_vector_fn!($variant, $t as Complex<$t>, $($byteorder_fn)?);
-        }
-    };
-    ($variant:ident, $t:ty $(, $byteorder_fn:ident)?) => {
+    ($variant:ident, $t:ty $(as $bytemuck:ty)? $(, $byteorder_fn:ident)?) => {
         impl FromProperty for Vec<$t> {
-            from_property_vector_fn!($variant, $t, $($byteorder_fn)?);
+            fn from_property(prop: &PropertyContent, ctx: &Context) -> Result<Self, ParseValueError> {
+                const CONTEXT: ParseValueError = ParseValueError(concat!("XISF Property key as vector of ", stringify!($t)));
+                if let PropertyType::Vector { r#type: NumericType::$variant, len } = prop.r#type {
+                    if let PropertyValue::DataBlock(block) = &prop.value {
+                        block.verify_checksum(ctx)
+                            .change_context(CONTEXT)?;
+                        let mut reader = block.decompressed_bytes(ctx)
+                            .change_context(CONTEXT)?;
+
+                        let mut v: Vec<$t> = vec![<$t as num_traits::Zero>::zero(); len];
+                        let slice = v.as_mut_slice();
+                        let bytes: &mut [u8] = bytemuck::try_cast_slice_mut(slice)
+                            .change_context(CONTEXT)?;
+                        reader.read_exact(bytes)
+                            .change_context(CONTEXT)?;
+                        byteorder_block!(block, CONTEXT, slice $(as $bytemuck)? $(, $byteorder_fn)?);
+
+                        Ok(v)
+                    } else {
+                        Err(report!(CONTEXT)).attach_printable("Vector properties must be serialized as a data block")
+                    }
+                } else {
+                    Err(report!(CONTEXT))
+                        .attach_printable(format!(
+                            concat!("Incorrect property type: expected ", stringify!($t), " vector, found {}"),
+                            prop.r#type))
+                }
+            }
         }
-    };
+    }
 }
 
 from_property_vector_impl!(Int8, i8);
@@ -675,60 +674,50 @@ from_property_vector_impl!(Int128, i128, from_slice_i128);
 from_property_vector_impl!(UInt128, u128, from_slice_u128);
 from_property_vector_impl!(Float32, f32, from_slice_f32);
 from_property_vector_impl!(Float64, f64, from_slice_f64);
-// TODO: from_property_vector_impl!(Float128, f128, from_slice_f128)
+#[cfg(feature = "f128")]
+from_property_vector_impl!(Float128, f128 as u128, from_slice_u128);
 
-from_property_vector_impl!(Complex32, Complex<f32>, from_slice_f32);
-from_property_vector_impl!(Complex64, Complex<f64>, from_slice_f64);
-// TODO: from_property_vector_impl!(Complex64, Complex<f128>, from_slice_f128);
+from_property_vector_impl!(Complex32, Complex<f32> as f32, from_slice_f32);
+from_property_vector_impl!(Complex64, Complex<f64> as f64, from_slice_f64);
+#[cfg(feature = "f128")]
+from_property_vector_impl!(Complex64, Complex<f128> as u128, from_slice_u128);
 
-macro_rules! from_property_matrix_fn {
-    ($variant:ident, $t:ty $(as Complex<$complex_t:ty>)?, $($byteorder_fn:ident)?) => {
-        fn from_property(prop: &PropertyContent, ctx: &Context) -> Result<Self, ParseValueError> {
-            const CONTEXT: ParseValueError = ParseValueError(concat!("XISF Property key as vector of ", stringify!($t)));
-            if let PropertyType::Matrix { r#type: NumericType::$variant, rows, columns } = prop.r#type {
-                if let PropertyValue::DataBlock(block) = &prop.value {
-                    block.verify_checksum(ctx)
-                        .change_context(CONTEXT)?;
-                    let mut reader = block.decompressed_bytes(ctx)
-                        .change_context(CONTEXT)?;
+macro_rules! from_property_matrix_impl {
+    ($variant:ident, $t:ty $(as $bytemuck:ty)? $(, $byteorder_fn:ident)?) => {
+        impl FromProperty for ndarray::Array2<$t> {
+            fn from_property(prop: &PropertyContent, ctx: &Context) -> Result<Self, ParseValueError> {
+                const CONTEXT: ParseValueError = ParseValueError(concat!("XISF Property key as matrix of ", stringify!($t)));
+                if let PropertyType::Matrix { r#type: NumericType::$variant, rows, columns } = prop.r#type {
+                    if let PropertyValue::DataBlock(block) = &prop.value {
+                        block.verify_checksum(ctx)
+                            .change_context(CONTEXT)?;
+                        let mut reader = block.decompressed_bytes(ctx)
+                            .change_context(CONTEXT)?;
 
-                    let mut bytes = vec![0; rows * columns];
-                    reader.read_exact(&mut bytes)
-                        .change_context(CONTEXT)?;
+                        let mut arr = ndarray::Array2::<$t>::zeros((rows, columns));
+                        // this unwrap is safe because:
+                        // 1. all owned arrays are contiguous, and
+                        // 2. it's in standard order since we just allocated it
+                        let slice = arr.as_slice_mut().unwrap();
+                        let bytes: &mut [u8] = bytemuck::try_cast_slice_mut(slice)
+                            .change_context(CONTEXT)?;
+                        reader.read_exact(bytes)
+                            .change_context(CONTEXT)?;
+                        byteorder_block!(block, CONTEXT, slice $(as $bytemuck)? $(, $byteorder_fn)?);
 
-                    // only needs to be mut when type has a concept of endian-ness -- will complain for i8 and u8
-                    #[allow(unused_mut)]
-                    let mut v: Vec<$t> = bytemuck::allocation::try_cast_vec(bytes)
-                        .map_err(|(e, _)| e) // returns a tuple error that stops change_context from working
-                        .change_context(CONTEXT)?;
-
-                    byteorder_block!(block, v, $($byteorder_fn)?);
-                    complex_block!(v, CONTEXT, $($complex_t)?);
-
-                    Self::from_shape_vec((rows, columns), v)
-                        .change_context(CONTEXT)
+                        Ok(arr)
+                    } else {
+                        Err(report!(CONTEXT)).attach_printable("Matrix properties must be serialized as a data block")
+                    }
                 } else {
-                    Err(report!(CONTEXT)).attach_printable("Vector properties must be serialized as a data block")
+                    Err(report!(CONTEXT))
+                        .attach_printable(format!(
+                            concat!("Incorrect property type: expected ", stringify!($t), " matrix, found {}"),
+                            prop.r#type))
                 }
-            } else {
-                Err(report!(CONTEXT))
-                    .attach_printable(format!("Incorrect property type: found {}", prop.r#type))
             }
         }
     }
-}
-
-macro_rules! from_property_matrix_impl {
-    ($variant:ident, Complex<$t:ty> $(, $byteorder_fn:ident)?) => {
-        impl FromProperty for ndarray::Array2<Complex<$t>> {
-            from_property_matrix_fn!($variant, $t as Complex<$t>, $($byteorder_fn)?);
-        }
-    };
-    ($variant:ident, $t:ty $(, $byteorder_fn:ident)?) => {
-        impl FromProperty for ndarray::Array2<$t> {
-            from_property_matrix_fn!($variant, $t, $($byteorder_fn)?);
-        }
-    };
 }
 
 from_property_matrix_impl!(Int8, i8);
@@ -743,11 +732,12 @@ from_property_matrix_impl!(Int128, i128, from_slice_i128);
 from_property_matrix_impl!(UInt128, u128, from_slice_u128);
 from_property_matrix_impl!(Float32, f32, from_slice_f32);
 from_property_matrix_impl!(Float64, f64, from_slice_f64);
-// TODO: from_property_matrix_impl!(Float128, f128, from_slice_f128)
+#[cfg(feature = "f128")]
+from_property_matrix_impl!(Float128, f128 as u128, from_slice_u128);
 
-from_property_matrix_impl!(Complex32, Complex<f32>, from_slice_f32);
-from_property_matrix_impl!(Complex64, Complex<f64>, from_slice_f64);
-// TODO: from_property_matrix_impl!(Complex64, Complex<f128>, from_slice_f128);
+from_property_matrix_impl!(Complex32, Complex<f32> as f32, from_slice_f32);
+from_property_matrix_impl!(Complex64, Complex<f64> as f64, from_slice_f64);
+from_property_matrix_impl!(Complex64, Complex<f128> as u128, from_slice_u128);
 
 // TODO: this is recursive
 impl<T: FromProperty> FromProperty for (T, Option<String>) {

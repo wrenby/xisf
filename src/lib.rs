@@ -52,6 +52,9 @@ use property::*;
 mod metadata;
 use metadata::Metadata;
 
+#[cfg(feature = "f128")]
+pub use f128;
+
 /// Flags to alter the behavior of the reader
 ///
 /// # Example
