@@ -17,6 +17,7 @@ use flate2::read::ZlibDecoder;
 use libxml::{readonly::RoNode, tree::NodeType};
 use ndarray::Array2;
 use parse_int::parse as parse_auto_radix;
+#[cfg(feature = "remotefs")]
 use remotefs::{RemoteError, RemoteErrorType};
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
@@ -1029,7 +1030,7 @@ mod tests {
     #[cfg(feature = "remote-ftp")]
     #[test]
     fn ftp_bin_file() {
-        use testcontainers::{core::WaitFor, clients::Cli, images::generic::GenericImage, RunnableImage};
+        use testcontainers::{core::WaitFor, clients::Cli, GenericImage, RunnableImage};
         let mut server: RunnableImage<_> = GenericImage::new("delfer/alpine-ftp-server", "latest")
             .with_env_var("USERS", "computer|deactivate_iguana|/files")
             .with_wait_for(WaitFor::message_on_stderr("passwd: password for computer changed by root"))
@@ -1041,7 +1042,7 @@ mod tests {
             server = server.with_mapped_port((pasv, pasv));
         }
 
-        let docker = Cli::docker();
+        let docker = Cli::default();
         let container = docker.run(server);
 
         let ftp = DataBlock {

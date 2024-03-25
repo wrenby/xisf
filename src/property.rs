@@ -737,6 +737,7 @@ from_property_matrix_impl!(Float128, f128 as u128, from_slice_u128);
 
 from_property_matrix_impl!(Complex32, Complex<f32> as f32, from_slice_f32);
 from_property_matrix_impl!(Complex64, Complex<f64> as f64, from_slice_f64);
+#[cfg(feature = "f128")]
 from_property_matrix_impl!(Complex64, Complex<f128> as u128, from_slice_u128);
 
 // TODO: this is recursive

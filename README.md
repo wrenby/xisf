@@ -12,7 +12,7 @@ An unaffiliated implementation of Pleiades Astrophoto's open-source Extensible I
 &nbsp; | `xisf-rs` | `libXISF` | `PCL`
 ---|:---:|:---:|:---:
 Language | Rust | C++ | C++
-License | MIT | GPLv3 | BSD-4-Clause-like
+License | MIT/Apache | GPLv3 | BSD-4-Clause-like
 Monolithic Files | Read | Read + Write | Read + Write
 Distributed Files | <details><summary>Read (Partial)</summary>`http`, `https`, `ftp`, see [road map](#road-map)</details> | ❌ | ❌
 N-D Images | ✅ | [❌](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e05a586109a634e3a43aeecc4ca693d00c2104e/libxisf.cpp#L816) | [❌](https://gitlab.com/pixinsight/PCL/-/blob/7cd5ee14f6b209cf03f5b2d1903941ea1a4c8aec/src/pcl/XISFReader.cpp#L2001)

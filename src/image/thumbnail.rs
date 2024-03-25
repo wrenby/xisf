@@ -109,8 +109,8 @@ impl Thumbnail {
             pub fn read_data(&self, ctx: &Context) -> Result<DynImageData, ReadDataBlockError>;
             /// Returns a container of all the image's XISF properties
             pub fn properties(&self) -> &Properties;
-            /// Returns a container of all the image's FITS keys
-            pub fn fits_keys(&self) -> &FitsKeys;
+            /// Returns a container of all the image's FITS keyword records
+            pub fn fits_header(&self) -> &FitsHeader;
             /// Returns a reference to the embedded ICC profile, if one exists.
             /// If the returned value is `Some`, obtain the profile data by calling `read_data()` on the contained value.
             /// Note: `read_data()` just returns a `Vec<u8>`; consider the `lcms2` crate if you need to actually decode it.

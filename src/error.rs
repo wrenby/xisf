@@ -21,13 +21,13 @@ impl Error for ParseValueError {}
 ///
 /// Counterpart to [`ReadPropertyError`]
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum ReadFitsKeyError {
+pub enum ReadFitsRecordError {
     /// Could not find a FITS key with the given name
     NotFound,
     /// Failed to parse the FITS key into the requested type
     InvalidFormat,
 }
-impl Display for ReadFitsKeyError {
+impl Display for ReadFitsRecordError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         f.write_str("Failed to read FITS key: ")?;
         match self {
@@ -36,7 +36,7 @@ impl Display for ReadFitsKeyError {
         }
     }
 }
-impl Error for ReadFitsKeyError {}
+impl Error for ReadFitsRecordError {}
 
 /// A Failure to parse an [XISF Property](crate::property::PropertyContent)
 ///

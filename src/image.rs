@@ -69,7 +69,7 @@ struct ImageBase {
     uuid: Option<Uuid>,
 
     properties: Properties,
-    fits_keys: FitsKeys,
+    fits_header: FitsHeader,
     icc_profile: Option<ICCProfile>,
     rgb_working_space: Option<RGBWorkingSpace>,
     display_function: Option<DisplayFunction>,
@@ -254,8 +254,8 @@ impl ImageBase {
     }
 
     /// Returns a container of all the image's FITS keys
-    pub fn fits_keys(&self) -> &FitsKeys {
-        &self.fits_keys
+    pub fn fits_header(&self) -> &FitsHeader {
+        &self.fits_header
     }
 
     /// Returns a reference to the embedded ICC profile, if one exists.
@@ -447,7 +447,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
     }
 
     let mut properties = HashMap::new();
-    let mut fits_keys = ListOrderedMultimap::new();
+    let mut fits_header = ListOrderedMultimap::new();
     let mut icc_profile = None;
     let mut rgb_working_space = None;
     let mut display_function = None;
@@ -487,7 +487,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
             }
             "FITSKeyword" if opts.import_fits_keywords => {
                 let key = FitsKeyword::parse_node(child)?;
-                fits_keys.append(key.name, key.content);
+                fits_header.append(key.name, key.content);
                 // TODO: respect fits_keywords_as_properties option
             },
             "ICCProfile" => parse_optional!(ICCProfile, icc_profile),
@@ -537,7 +537,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
             uuid,
 
             properties: Properties::new(properties),
-            fits_keys: FitsKeys::new(fits_keys),
+            fits_header: FitsHeader::new(fits_header),
             icc_profile,
             rgb_working_space,
             display_function,
@@ -607,7 +607,7 @@ impl Image {
             /// Returns a container of all the image's XISF properties
             pub fn properties(&self) -> &Properties;
             /// Returns a container of all the image's FITS keys
-            pub fn fits_keys(&self) -> &FitsKeys;
+            pub fn fits_header(&self) -> &FitsHeader;
             /// Returns a reference to the embedded ICC profile, if one exists.
             /// If the returned value is `Some`, obtain the profile data by calling `read_data()` on the contained value.
             /// Note: `read_data()` just returns a `Vec<u8>`; consider the `lcms2` crate if you need to actually decode it.
