@@ -14,16 +14,10 @@ use ndarray::{ArrayD, IxDyn};
 use num_complex::Complex;
 use ordered_multimap::ListOrderedMultimap;
 use parse_int::parse as parse_auto_radix;
-use strum::{Display, EnumString, EnumVariantNames, VariantNames};
+use strum::{Display, EnumString, VariantNames};
 use uuid::Uuid;
 use crate::{
-    data_block::{ByteOrder, Context, DataBlock},
-    error::{ReadDataBlockError, ParseValueError, ParseNodeErrorKind::*},
-    is_valid_id,
-    MaybeReference,
-    ParseNodeError,
-    property::{Property, Properties},
-    ReadOptions,
+    data_block::{ByteOrder, Context, DataBlock}, error::{ParseNodeErrorKind::*, ParseValueError, ReadDataBlockError}, is_valid_id, property::{Properties, Property}, table::Table, MaybeReference, ParseNodeError, ReadOptions
 };
 
 mod image_data;
@@ -447,6 +441,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
     }
 
     let mut properties = HashMap::new();
+    let mut tables = vec![];
     let mut fits_header = ListOrderedMultimap::new();
     let mut icc_profile = None;
     let mut rgb_working_space = None;
@@ -490,6 +485,7 @@ fn parse_image<T: ParseImage + 'static>(node: RoNode, xpath: &XpathContext, opts
                 fits_header.append(key.name, key.content);
                 // TODO: respect fits_keywords_as_properties option
             },
+            "Table" => tables.push(Table::parse_node(child, xpath, opts)?),
             "ICCProfile" => parse_optional!(ICCProfile, icc_profile),
             "RGBWorkingSpace" => parse_optional!(RGBWorkingSpace, rgb_working_space),
             "DisplayFunction" => parse_optional!(DisplayFunction, display_function),
@@ -649,7 +645,7 @@ impl Image {
 /// Describes what kind of data makes up a given image
 ///
 /// See also [`DynImageData`]
-#[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
+#[derive(Clone, Copy, Debug, Display, EnumString, VariantNames, PartialEq)]
 pub enum SampleFormat {
     /// Pixel samples are scalar `u8`s
     UInt8,
@@ -688,7 +684,7 @@ pub struct SampleBounds {
 }
 
 /// Describes whether this is a light frame, dark frame, flat frame, bias frame, etc
-#[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
+#[derive(Clone, Copy, Debug, Display, EnumString, VariantNames, PartialEq)]
 pub enum ImageType {
     /// A bias frame is an extremely short exposure taken with the sensor covered,
     /// taken to counteract the sensor's readout noise.
@@ -751,7 +747,7 @@ pub enum ImageType {
 ///
 /// No matter which pixel storage layout is used, the pixel samples are stored in row-major order.
 /// See [the specification](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#pixel_storage_models) for more details and a visual representation of each layout.
-#[derive(Clone, Copy, Debug, Display, Default, EnumString, EnumVariantNames, PartialEq)]
+#[derive(Clone, Copy, Debug, Display, Default, EnumString, VariantNames, PartialEq)]
 pub enum PixelStorage {
     /// The image is stored as all of the first channel, then all of the second channel, and so on.
     /// That is, for a W\*H 2D image with 3 channels and `u8` samples, pixel *p<sub>x,y,c</sub>* is stored at byte offset *WHc + Wy + x*.
@@ -766,7 +762,7 @@ pub enum PixelStorage {
 }
 
 /// An image's [color space](https://en.wikipedia.org/wiki/Color_space)
-#[derive(Clone, Copy, Debug, Display, Default, EnumString, EnumVariantNames, PartialEq)]
+#[derive(Clone, Copy, Debug, Display, Default, EnumString, VariantNames, PartialEq)]
 pub enum ColorSpace {
     /// A one-channel grayscale image. Default when none is specified.
     #[default]

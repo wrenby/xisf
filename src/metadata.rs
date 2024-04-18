@@ -38,7 +38,7 @@ impl Metadata {
                         tracing::warn!("Duplicate property found with id {} -- discarding the previous one", prop.id);
                     }
                 }
-                _ => tracing::warn!("Ignoring unrecognized child node <{}>", child.get_name()),
+                other => tracing::warn!("Ignoring unrecognized child node <{}>", other),
             }
         }
 

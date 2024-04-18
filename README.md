@@ -19,7 +19,7 @@ N-D Images | ✅ | [❌](https://gitea.nouspiro.space/nou/libXISF/src/commit/8e0
 Pixel Sample Formats | Scalar, Complex | Agnostic (Raw Bytes Only) | Scalar<sup>1</sup>, Complex
 Image Metadata | <details><summary>Everything</summary> Attributes, XISF Properties, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA, Resolution, Thumbnail</details> | <details><summary>Basic</summary> Attributes<sup>2</sup>, XISF Properties<sup>3</sup>, FITS Keywords<sup>4</sup>, ICC Profile, CFA, Thumbnail</details> | <details><summary>Nearly Everything</summary> Attributes<sup>5</sup>, XISF Properties<sup>6</sup>, FITS Keywords, ICC Profile, RGB Working Space, Display Function, CFA, Resolution, Thumbnail</details>
 Supported XISF Property Locations | `<Image>`, `<Metadata>`, `<xisf>` | `<Image>` | `<Image>`, `<Metadata>`, `<xisf>`
-`<Table>` Element | ❌ | ❌ | ❌
+`<Table>` Element | ✅ | ❌ | ❌
 `<Reference>` Element | ✅ | ❌ | ❌
 Data Block Compression | <details><summary>✅<sup>7</sup>&nbsp;&nbsp;</summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>✅<sup>7, 8</sup></summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details> | <details><summary>✅<sup>7</sup>&nbsp;&nbsp;</summary>`zlib`, `lz4`, `lz4hc`, `zstd`</details>
 Checksum Verification | ✅ | ❌ | ✅

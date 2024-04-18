@@ -72,7 +72,7 @@ impl Properties {
 
 /// A data type associated with an XISF property
 // TODO: find a better representation for this -- need to store vector length and matrix width/height, and don't want to duplicate a ton of stuff to do it
-#[derive(Clone, Copy, Debug, Display, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Display, PartialEq, Eq, Hash)]
 pub enum NumericType {
     /// A scalar 8-bit signed integer
     Int8,
@@ -130,9 +130,8 @@ impl NumericType {
     }
 }
 
-
 /// What data type the property expects to be parsed into
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash)]
 pub enum PropertyType {
     /// A boolean (true or false)
     Boolean,
@@ -143,21 +142,9 @@ pub enum PropertyType {
     /// A date + time + UTC offset, conforming to ISO-8601
     TimePoint,
     /// A vector (1D array) of numbers
-    Vector {
-        /// The type of number contained in the vector
-        r#type: NumericType,
-        /// The dimensionality / number of elements in the vector
-        len: usize
-    },
+    Vector(NumericType),
     /// A matrix (2D array) of numbers
-    Matrix {
-        /// The type of number contained in the matrix
-        r#type: NumericType,
-        /// The number of rows in the matrix
-        rows: usize,
-        /// The number of columns in the matrix
-        columns: usize
-    },
+    Matrix(NumericType),
 }
 impl Display for PropertyType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -166,22 +153,12 @@ impl Display for PropertyType {
             Self::Number(n) => n.fmt(f),
             Self::String => f.write_str("String"),
             Self::TimePoint => f.write_str("TimePoint"),
-            Self::Vector { r#type, .. } => f.write_fmt(format_args!("{}Vector", r#type.prefix())),
-            Self::Matrix { r#type, .. } => f.write_fmt(format_args!("{}Matrix", r#type.prefix())),
+            Self::Vector(r#type) => f.write_fmt(format_args!("{}Vector", r#type.prefix())),
+            Self::Matrix(r#type) => f.write_fmt(format_args!("{}Matrix", r#type.prefix())),
         }
     }
 }
-
-#[derive(PartialEq)]
-enum PropertyTypeAttr {
-    Boolean,
-    Number(NumericType),
-    String,
-    TimePoint,
-    Vector(NumericType),
-    Matrix(NumericType),
-}
-impl FromStr for PropertyTypeAttr {
+impl FromStr for PropertyType {
     type Err = Report<ParseValueError>;
 
     fn from_str(s: &str) -> Result<Self, ParseValueError> {
@@ -274,14 +251,14 @@ impl Property {
         // for example: Instrument:Telescope:Aperture or Observation:Object:Name
         for part in id.split(":") {
             if !is_valid_id(part) {
-                return Err(report(InvalidAttr)).attach_printable("Invalid id attribute: ")
+                return Err(report(InvalidAttr)).attach_printable("Invalid id attribute: only alphabetic characters and colons are allowed")
             }
         }
 
-        let type_attr = attrs.remove("type")
+        let r#type = attrs.remove("type")
             .ok_or(context(MissingAttr))
             .attach_printable("Missing type attribute")?
-            .parse::<PropertyTypeAttr>()
+            .parse::<PropertyType>()
             .change_context(context(InvalidAttr))
             .attach_printable("Failed to parse type attribute")?;
 
@@ -305,9 +282,8 @@ impl Property {
             };
         }
 
-        match type_attr {
-            PropertyTypeAttr::String => {
-                let r#type = PropertyType::String;
+        match r#type {
+            PropertyType::String => {
                 // string properties can either be in a data block or a child text node
                 if let Some(block) = data_block {
                     warn_remaining!(attrs, children);
@@ -337,7 +313,7 @@ impl Property {
                     }
                 }
             },
-            PropertyTypeAttr::Vector(r#type) => {
+            PropertyType::Vector(_) => {
                 let len = attrs.remove("length")
                     .ok_or(context(MissingAttr))
                     .attach_printable("Missing length attribute")?
@@ -346,18 +322,13 @@ impl Property {
                     .change_context(context(InvalidAttr))
                     .attach_printable("Failed to parse length attribute")?;
 
-                let r#type = PropertyType::Vector {
-                    r#type,
-                    len,
-                };
-
                 if let Some(block) = data_block {
                     warn_remaining!(attrs, children);
                     Ok(Self {
                         id,
                         content: PropertyContent {
                             r#type,
-                            value: PropertyValue::DataBlock(block),
+                            value: PropertyValue::Vector { len, block },
                             comment,
                         }
                     })
@@ -365,7 +336,7 @@ impl Property {
                     Err(context(InvalidAttr)).attach_printable("Vector properties must have a data block")
                 }
             },
-            PropertyTypeAttr::Matrix(r#type) => {
+            PropertyType::Matrix(_) => {
                 let rows = attrs.remove("rows")
                     .ok_or(context(MissingAttr))
                     .attach_printable("Missing rows attribute")?
@@ -382,20 +353,13 @@ impl Property {
                     .change_context(context(InvalidAttr))
                     .attach_printable("Failed to parse columns attribute")?;
 
-                let r#type = PropertyType::Matrix {
-                    r#type,
-                    rows,
-                    columns,
-                };
-
-
                 if let Some(block) = data_block {
                     warn_remaining!(attrs, children);
                     Ok(Self {
                         id,
                         content: PropertyContent {
                             r#type,
-                            value: PropertyValue::DataBlock(block),
+                            value: PropertyValue::Matrix { rows, columns, block },
                             comment,
                         }
                     })
@@ -403,11 +367,11 @@ impl Property {
                     Err(context(InvalidAttr)).attach_printable("Matrix properties must have a data block")
                 }
             },
-            PropertyTypeAttr::Boolean | PropertyTypeAttr::Number(_) | PropertyTypeAttr::TimePoint => {
-                let r#type = match type_attr {
-                    PropertyTypeAttr::Boolean => PropertyType::Boolean,
-                    PropertyTypeAttr::Number(inner) => PropertyType::Number(inner),
-                    PropertyTypeAttr::TimePoint => PropertyType::TimePoint,
+            PropertyType::Boolean | PropertyType::Number(_) | PropertyType::TimePoint => {
+                let r#type = match r#type {
+                    PropertyType::Boolean => PropertyType::Boolean,
+                    PropertyType::Number(inner) => PropertyType::Number(inner),
+                    PropertyType::TimePoint => PropertyType::TimePoint,
                     _ => unreachable!()
                 };
                 if data_block.is_none() {
@@ -441,14 +405,32 @@ impl Property {
 /// properties, which have their own rules -- and will be stored in the `Plaintext` variant.
 ///
 /// For compound types such as vectors and matrices, this will come from a [data block](crate::data_block::DataBlock)
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub enum PropertyValue {
     /// The value of this property is stored in the XML node itself
     ///
     /// This may come from a `value` attribute or from a text node, depending on the property type
     Plaintext(String),
-    /// The value of this property is stored in a [data block](crate::data_block::DataBlock)
+    /// The value of this property is stored elsewhere in the file
+    ///
+    /// At time of writing, only string properties may use this variant, since vectors and matrices need additional information about dimension lengths
     DataBlock(DataBlock),
+    /// A 1-D array of values stored in a [data block](crate::data_block::DataBlock)
+    Vector {
+        /// How many elements are in the vector
+        len: usize,
+        /// Information about the data block where this vector is stored
+        block: DataBlock,
+    },
+    /// A 2-D array of values stored in a [data block](crate::data_block::DataBlock)
+    Matrix {
+        /// How many rows are in the matrix
+        rows: usize,
+        /// How many columns are in the matrix
+        columns: usize,
+        /// Information about the data block where this matrix is stored
+        block: DataBlock,
+    },
 }
 
 /// All components of an XISF property other than its ID
@@ -483,8 +465,10 @@ impl FromProperty for bool {
                 PropertyValue::Plaintext(text) if text == "1" => Ok(true),
                 PropertyValue::Plaintext(bad) => Err(report!(CONTEXT))
                     .attach_printable(format!("Expected one of [0, 1], found {bad}")),
-                PropertyValue::DataBlock(_) => Err(report!(CONTEXT))
-                    .attach_printable("Scalar properties cannot be serialized as a data block")
+                PropertyValue::DataBlock(_) | PropertyValue::Vector { .. } | PropertyValue::Matrix { .. } => {
+                    Err(report!(CONTEXT))
+                        .attach_printable("Scalar properties cannot be serialized as a data block")
+                }
             }
         } else {
             Err(report!(CONTEXT))
@@ -585,7 +569,9 @@ impl FromProperty for String {
                     reader.read_to_string(&mut string)
                         .change_context(CONTEXT)?;
                     Ok(string)
-                }
+                },
+                _ => Err(report!(CONTEXT))
+                    .attach_printable("Cannot parse a vector or matrix value as a string")
             }
         } else {
             Err(report!(CONTEXT))
@@ -632,14 +618,14 @@ macro_rules! from_property_vector_impl {
         impl FromProperty for Vec<$t> {
             fn from_property(prop: &PropertyContent, ctx: &Context) -> Result<Self, ParseValueError> {
                 const CONTEXT: ParseValueError = ParseValueError(concat!("XISF Property key as vector of ", stringify!($t)));
-                if let PropertyType::Vector { r#type: NumericType::$variant, len } = prop.r#type {
-                    if let PropertyValue::DataBlock(block) = &prop.value {
+                if let PropertyType::Vector(NumericType::$variant) = prop.r#type {
+                    if let PropertyValue::Vector { len, block } = &prop.value {
                         block.verify_checksum(ctx)
                             .change_context(CONTEXT)?;
                         let mut reader = block.decompressed_bytes(ctx)
                             .change_context(CONTEXT)?;
 
-                        let mut v: Vec<$t> = vec![<$t as num_traits::Zero>::zero(); len];
+                        let mut v: Vec<$t> = vec![<$t as num_traits::Zero>::zero(); *len];
                         let slice = v.as_mut_slice();
                         let bytes: &mut [u8] = bytemuck::try_cast_slice_mut(slice)
                             .change_context(CONTEXT)?;
@@ -687,14 +673,14 @@ macro_rules! from_property_matrix_impl {
         impl FromProperty for ndarray::Array2<$t> {
             fn from_property(prop: &PropertyContent, ctx: &Context) -> Result<Self, ParseValueError> {
                 const CONTEXT: ParseValueError = ParseValueError(concat!("XISF Property key as matrix of ", stringify!($t)));
-                if let PropertyType::Matrix { r#type: NumericType::$variant, rows, columns } = prop.r#type {
-                    if let PropertyValue::DataBlock(block) = &prop.value {
+                if let PropertyType::Matrix(NumericType::$variant) = prop.r#type {
+                    if let PropertyValue::Matrix { rows, columns, block } = &prop.value {
                         block.verify_checksum(ctx)
                             .change_context(CONTEXT)?;
                         let mut reader = block.decompressed_bytes(ctx)
                             .change_context(CONTEXT)?;
 
-                        let mut arr = ndarray::Array2::<$t>::zeros((rows, columns));
+                        let mut arr = ndarray::Array2::<$t>::zeros((*rows, *columns));
                         // this unwrap is safe because:
                         // 1. all owned arrays are contiguous, and
                         // 2. it's in standard order since we just allocated it

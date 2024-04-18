@@ -43,6 +43,9 @@ use data_block::{ChecksumAlgorithm, CompressionAlgorithm, CompressionLevel, Cont
 pub mod image;
 use image::Image;
 
+pub mod table;
+use table::Table;
+
 mod reference;
 pub(crate) use reference::*;
 
@@ -217,6 +220,7 @@ const fn context(kind: ParseNodeErrorKind) -> ParseNodeError {
 pub struct XISF {
     images: Vec<Image>,
     properties: Properties,
+    tables: Vec<Table>,
     metadata: Metadata,
 }
 impl XISF {
@@ -377,6 +381,7 @@ impl XISF {
         }
 
         let mut images = vec![];
+        let mut tables = vec![];
         let mut properties = HashMap::new();
         let mut metadata = None;
         for mut child in node.get_child_nodes() {
@@ -389,6 +394,7 @@ impl XISF {
                         tracing::warn!("Duplicate property found with id {} -- discarding the previous one", prop.id);
                     }
                 },
+                "Table" => tables.push(Table::parse_node(child, xpath, opts)?),
                 "Metadata" => {
                     if metadata.replace(Metadata::parse_node(child, xpath)?).is_some() {
                         tracing::warn!("Duplicate Metadata element found -- discarding the previous one");
@@ -405,6 +411,7 @@ impl XISF {
         Ok(XISF {
             images,
             properties: Properties::new(properties),
+            tables,
             metadata,
         })
     }
@@ -434,9 +441,25 @@ impl XISF {
 
     /// Returns a collection of all properties which were applied directly to the XISF root element (this is uncommon, but allowed)
     ///
-    /// Images have their own set of properties;
+    /// Images have their own set of properties that will not be included in this list
     pub fn properties(&self) -> &Properties {
         &self.properties
+    }
+
+    /// Returns an iterator over all tables associated with the root element
+    pub fn tables(&self) -> impl Iterator<Item = &Table> {
+        self.tables.iter()
+    }
+    /// Returns the total number of tables associated with the root element
+    pub fn num_tables(&self) -> usize {
+        self.tables.len()
+    }
+    /// Returns a reference to the `i`-th table associated with the root element
+    ///
+    /// # Panics
+    /// If `i` is outside the range `0..num_tables()`
+    pub fn table(&self, i: usize) -> &Table {
+        &self.tables[i]
     }
 
     /// Returns a collection of all [metadata properties](https://pixinsight.com/doc/docs/XISF-1.0-spec/XISF-1.0-spec.html#__XISF_Core_Elements_:_Metadata_Core_Element_:_Mandatory_Metadata_Properties__)

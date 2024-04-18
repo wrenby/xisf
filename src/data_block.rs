@@ -22,7 +22,7 @@ use remotefs::{RemoteError, RemoteErrorType};
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
 use sha3::{Sha3_256, Sha3_512};
-use strum::{EnumString, Display, EnumVariantNames};
+use strum::{Display, EnumString, VariantNames};
 use url::Url;
 use crate::error::{
     ParseValueError,
@@ -41,7 +41,7 @@ use sub_blocks::*;
 ///
 /// Most commonly used for [images](crate::image::Image), this type is essentially
 /// a reference to a file or part of a file where the raw data can be read from.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Hash)]
 pub struct DataBlock {
     /// Where this data block can be found
     pub location: Location,
@@ -182,7 +182,7 @@ impl DataBlock {
 }
 
 /// Where to find this data block
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub enum Location {
     /// Inline or embedded: data is encoded in a child text or &lt;Data&gt; node
     Text {
@@ -541,7 +541,7 @@ impl<'a, R> ReadTakeRefExt<'a, R> for RefMut<'a, R> where R: Read {
 }
 
 /// Describes the encoding of an [inline or embedded](Location::Text) data block
-#[derive(Clone, Copy, Debug, Default, Display, EnumString, EnumVariantNames, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Display, EnumString, VariantNames, PartialEq, Hash)]
 pub enum TextEncoding {
     /// [Base 64 encoding](https://datatracker.ietf.org/doc/html/rfc4648#section-4)
     #[default]
@@ -553,7 +553,7 @@ pub enum TextEncoding {
 }
 
 /// The byte order (AKA endianness) of this data block
-#[derive(Clone, Copy, Debug, Default, Display, EnumString, EnumVariantNames, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Display, EnumString, VariantNames, PartialEq, Hash)]
 pub enum ByteOrder {
     /// Big endian (most significant bytes are stored first)
     #[strum(serialize = "big")]
@@ -565,7 +565,7 @@ pub enum ByteOrder {
 }
 
 /// A cryptographic hash function used to compute a [data block](DataBlock)'s [checksum](Checksum)
-#[derive(Clone, Copy, Debug, Display, EnumString, EnumVariantNames, PartialEq)]
+#[derive(Clone, Copy, Debug, Display, EnumString, VariantNames, PartialEq, Hash)]
 pub enum ChecksumAlgorithm {
     /// The SHA-1 cryptographic hash function
     #[strum(serialize = "sha-1", serialize = "sha1")]
@@ -585,7 +585,7 @@ pub enum ChecksumAlgorithm {
 }
 
 /// A checksum digest for a [data block](DataBlock) with a given algorithm
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub enum Checksum {
     /// A 20-byte digest for the SHA-1 cryptographic hash function
     Sha1([u8; 20]),
@@ -673,7 +673,7 @@ impl Checksum {
 }
 
 /// All configuration options pertaining to sub-block compression
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 pub struct Compression {
     /// The algorithm used to compress this block
     pub algorithm: CompressionAlgorithm,
@@ -701,7 +701,7 @@ impl Compression {
 }
 
 /// An algorithm used to compress or decompress a [data block](DataBlock)
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash)]
 pub enum CompressionAlgorithm {
     /// [Zlib](https://datatracker.ietf.org/doc/html/rfc1950)
     Zlib,
@@ -715,7 +715,7 @@ pub enum CompressionAlgorithm {
 
 /// Only used as an intermediate step in decoding, never exposed as part of the API
 /// Enum fields follow the pattern uncompressed-size, byte-shuffling-item-size
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Hash)]
 enum CompressionAttr {
     Zlib(u64),
     ZlibByteShuffling(u64, NonZeroU64),
@@ -835,7 +835,7 @@ impl FromStr for CompressionAttr {
 }
 
 /// Tuples of (compressed size, uncompressed size)
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Hash)]
 pub(crate) struct SubBlocks(pub(crate) Vec<(u64, u64)>);
 impl fmt::Debug for SubBlocks {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -885,7 +885,7 @@ impl FromStr for SubBlocks {
 ///
 /// A low value sacrifices compression ratio for speed, a high value sacrifices speed for compression ratio.
 #[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Hash)]
 pub struct CompressionLevel(u8);
 impl CompressionLevel {
     /// Selects a
